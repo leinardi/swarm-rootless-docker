@@ -29,6 +29,7 @@ use std::process::ExitCode;
 
 use swarm_rootless_docker::cli::{Cli, Command};
 use swarm_rootless_docker::config::LaunchConfig;
+use swarm_rootless_docker::probe::{self, ProbeReport};
 
 /// Exit code of a launcher error.
 const EXIT_FAILURE: u8 = 1;
@@ -54,5 +55,21 @@ fn main() -> ExitCode {
                 ExitCode::from(EXIT_USAGE)
             }
         },
+        Command::Probe { request } => probe(&request),
+    }
+}
+
+/// Prints the probe's report as one JSON line on stdout: exit 0 when accepted, 1 when refused
+/// (or when the report cannot be written, which the launcher reads as a refusal too).
+fn probe(request: &str) -> ExitCode {
+    let report = probe::run_on_host(request);
+    let accepted = matches!(report, ProbeReport::Accepted { .. });
+    let written = serde_json::to_string(&report)
+        .map_err(io::Error::other)
+        .and_then(|line| writeln!(io::stdout(), "{line}"));
+    if accepted && written.is_ok() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::from(EXIT_FAILURE)
     }
 }

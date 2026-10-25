@@ -83,11 +83,26 @@ pub struct Device {
 }
 
 /// Where a path physically lies: a filesystem and a position in it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PlacementWire")]
 pub struct Placement {
     pub device: Device,
     /// The position from the filesystem's root: clean, absolute, `/` for the root itself.
     pub fs_path: String,
+}
+
+#[derive(Deserialize)]
+struct PlacementWire {
+    device: Device,
+    fs_path: String,
+}
+
+impl TryFrom<PlacementWire> for Placement {
+    type Error = String;
+
+    fn try_from(wire: PlacementWire) -> Result<Self, Self::Error> {
+        Self::new(wire.device, &wire.fs_path)
+    }
 }
 
 impl Placement {
@@ -156,6 +171,17 @@ pub fn place(mounts: &[Mount], path: &str) -> Result<Placement, MountError> {
             mount_point: below.mount_point.clone(),
         });
     }
+    locate(mounts, path)
+}
+
+/// [`place`] without the check for mounts below `path`: for a path nothing may overlap (the
+/// host's Docker data root, full of its own mounts), not for one a daemon gets.
+///
+/// # Errors
+///
+/// A [`MountError`] when there is no single root mount, two mounts are attached side by side on
+/// one point, or the mount's root was deleted.
+pub fn locate(mounts: &[Mount], path: &str) -> Result<Placement, MountError> {
     // The root mount is attached to a mount outside this namespace, so its parent is not listed.
     let roots: Vec<&Mount> = mounts
         .iter()

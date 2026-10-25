@@ -334,7 +334,8 @@ fn storage_label_escapes_paths() {
 fn probe_spec_is_pinned() {
     let config = config();
     let image = image();
-    let request = ProbeRequest::new(&config, &image);
+    let denied = [AbsolutePath::parse("/mnt/.ix-apps/docker").unwrap()];
+    let request = ProbeRequest::new(&config, &image, &denied);
     let spec = probe_spec(&config, &image, &launcher(), &request).unwrap();
     assert_eq!(spec.name, "swarm-rootless-docker-probe-herdquay");
 
@@ -342,6 +343,7 @@ fn probe_spec_is_pinned() {
         r#"{"data_root":"/mnt/pool/docker/herdquay-docker/data","#,
         r#""socket_dir":"/mnt/pool/docker/herdquay-docker/socket","#,
         r#""mount_sources":["/mnt/pool/docker/herdquay/workspace","/mnt/pool/docker/herdquay/cache"],"#,
+        r#""denied":["/mnt/.ix-apps/docker"],"#,
         r#""owner_uid":568,"#,
         r#""subuid":{"start":100000,"count":65536},"#,
         r#""subgid":{"start":200000,"count":65536}}"#
