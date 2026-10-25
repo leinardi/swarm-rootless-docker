@@ -238,6 +238,14 @@ jobs:
       - name: Cache the Rust build
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
+      # The meta crate's Dockerfile test drives droast, whose ShellCheck bridge is required.
+      - name: Set up droast
+        uses: ./.github/actions/setup-droast
+
+      # droast's ShellCheck bridge runs the shellcheck on PATH: the pinned one, not the runner's.
+      - name: Set up ShellCheck
+        uses: ./.github/actions/setup-shellcheck
+
       - name: Check formatting
         run: cargo fmt --all --check
 

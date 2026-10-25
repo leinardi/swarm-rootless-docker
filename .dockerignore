@@ -1,0 +1,39 @@
+# Read from the root of the build context (the repository root, DOCKER_CONTEXT), which is the only
+# place a plain .dockerignore is honoured: next to the Dockerfile it would only count as
+# Dockerfile.dockerignore.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# CI, docs, tests and agent tooling: none of it is an input of the image
+.github
+.claude
+.agents
+.serena
+docs
+examples
+tests
+*.md
+
+# Local artifacts
+dist
+target
+
+# Editor/IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Node/pip cache etc.
+node_modules
+__pycache__
+
+# Tool caches
+.cache
+.fallow
+
+# The Dockerfile and the compose example: buildx reads the Dockerfile itself
+deployments

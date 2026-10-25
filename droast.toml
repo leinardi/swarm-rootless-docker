@@ -28,8 +28,8 @@ strict-labels = true
 DF001 = "error" # Avoid :latest base images
 DF057 = "error" # Require pipefail for shell pipelines
 
-# The seven OCI labels of the shipped image, each required (DF074 when missing) and validated. The
-# image's own labels (UID/GID, base digest) join this table with the Dockerfile.
+# The labels of the shipped image, each required (DF074 when missing) and validated: the seven OCI
+# labels, the base the release pinned, and the UID and GID the launcher runs the daemon as.
 [required-labels]
 "org.opencontainers.image.title" = "text"
 "org.opencontainers.image.description" = "text"
@@ -38,6 +38,10 @@ DF057 = "error" # Require pipefail for shell pipelines
 "org.opencontainers.image.revision" = "text"
 "org.opencontainers.image.created" = "text"
 "org.opencontainers.image.licenses" = "spdx"
+"org.opencontainers.image.base.name" = "text"
+"org.opencontainers.image.base.digest" = "text"
+"io.github.leinardi.swarm-rootless-docker.uid" = "text"
+"io.github.leinardi.swarm-rootless-docker.gid" = "text"
 
 # ShellCheck must be available; never silently skip it
 [shellcheck]

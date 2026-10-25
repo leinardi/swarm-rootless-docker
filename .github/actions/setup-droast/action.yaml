@@ -1,0 +1,24 @@
+name: "Set up droast"
+description: >-
+  Installs the Dockerfile Roast (droast) release binary the meta crate's Dockerfile test drives,
+  verified against its published digest. The pre-commit hook builds its own from source.
+
+runs:
+  using: "composite"
+  steps:
+    # Keep the version in step with the dockerfile-roast rev in .pre-commit-config.yaml (the meta
+    # crate's toolchain test checks it); the digest is the release's sha256sums.txt entry, from
+    # gh release download <version> -R immanuwell/dockerfile-roast -p sha256sums.txt -O -.
+    - name: Install droast
+      shell: bash
+      env:
+        DROAST_VERSION: 1.7.0
+        DROAST_SHA256: cadb963a040ba2e68641af764f794e5d4fb3371bb9b92255fa5027060b08ea6e
+      run: |
+        set -euo pipefail
+        binary="${RUNNER_TEMP}/droast"
+        curl -fsSL -o "${binary}" \
+          "https://github.com/immanuwell/dockerfile-roast/releases/download/${DROAST_VERSION}/droast-linux-x86_64"
+        echo "${DROAST_SHA256}  ${binary}" | sha256sum --check --strict -
+        sudo install -m 0755 "${binary}" /usr/local/bin/droast
+        droast --version
