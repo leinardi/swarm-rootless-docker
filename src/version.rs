@@ -43,3 +43,10 @@ pub const DATE: &str = match option_env!("SWARM_ROOTLESS_DOCKER_DATE") {
     Some(date) => date,
     None => "unknown",
 };
+
+/// The version line, without the program name: `VERSION (COMMIT, DATE)`. `--version` prints it
+/// after the name.
+#[must_use]
+pub fn long() -> String {
+    format!("{VERSION} ({COMMIT}, {DATE})")
+}
