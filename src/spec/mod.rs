@@ -42,9 +42,10 @@ use bollard::models::{
     HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
     MountTmpfsOptions, MountType, RestartPolicy, RestartPolicyNameEnum,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::config::{IdRange, LaunchConfig, NanoCpus};
+use crate::config::{AbsolutePath, IdRange, InstanceName, LaunchConfig, NanoCpus};
+use crate::mounts::{Device, Placement};
 
 /// The prefix of every container name and label key.
 pub const PREFIX: &str = "swarm-rootless-docker";
@@ -91,8 +92,9 @@ pub const LABEL_SUBUID: &str = "io.github.leinardi.swarm-rootless-docker.subuid"
 /// The daemon's subordinate GID range, `START:COUNT`.
 pub const LABEL_SUBGID: &str = "io.github.leinardi.swarm-rootless-docker.subgid";
 /// The daemon's host paths with their identities, as the probe saw them: a JSON array of
-/// `{"path", "device", "inode"}`, data root first, then the socket directory, then each mount
-/// source in flag order.
+/// `{"path", "device": {"major", "minor"}, "fs_path", "file": {"device", "inode"}}` (see
+/// [`HostLocation`]), data root first, then the socket directory, then each mount source in flag
+/// order.
 pub const LABEL_STORAGE: &str = "io.github.leinardi.swarm-rootless-docker.storage";
 
 /// [`LABEL_ROLE`] of a daemon container.
@@ -245,32 +247,54 @@ impl ImageIdentity {
 }
 
 /// A host file's identity, `st_dev` and `st_ino`: two paths with the same one are the same file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileId {
     pub device: u64,
     pub inode: u64,
 }
 
-/// The identities the probe found for a configuration's host paths, in its order.
+/// Where a host path physically lies, as the probe found it: its filesystem and position in it
+/// (see [`crate::mounts`]), and its own `st_dev:st_ino`.
+///
+/// Two paths overlap on the host when they share the filesystem and one position contains the
+/// other, whatever bind mount or second path either was reached through, or when they are the
+/// same file (a hard link).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HostLocation {
+    #[serde(flatten)]
+    pub placement: Placement,
+    pub file: FileId,
+}
+
+impl HostLocation {
+    /// Whether the two are the same file or directory tree on the host, or one contains the
+    /// other.
+    #[must_use]
+    pub fn overlaps(&self, other: &Self) -> bool {
+        self.file == other.file || self.placement.overlaps(&other.placement)
+    }
+}
+
+/// The locations the probe found for a configuration's host paths, in its order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageIds {
-    data_root: FileId,
-    socket_dir: FileId,
-    mounts: Vec<FileId>,
+    data_root: HostLocation,
+    socket_dir: HostLocation,
+    mounts: Vec<HostLocation>,
 }
 
 impl StorageIds {
-    /// Pairs the identities with `config`'s paths: the data root, the socket directory, then one
+    /// Pairs the locations with `config`'s paths: the data root, the socket directory, then one
     /// per mount source, in flag order.
     ///
     /// # Errors
     ///
-    /// [`SpecError::StorageCount`] when `mounts` does not have one identity per mount.
+    /// [`SpecError::StorageCount`] when `mounts` does not have one location per mount.
     pub fn new(
         config: &LaunchConfig,
-        data_root: FileId,
-        socket_dir: FileId,
-        mounts: Vec<FileId>,
+        data_root: HostLocation,
+        socket_dir: HostLocation,
+        mounts: Vec<HostLocation>,
     ) -> Result<Self, SpecError> {
         if mounts.len() != config.mounts().len() {
             return Err(SpecError::StorageCount {
@@ -282,6 +306,99 @@ impl StorageIds {
             data_root,
             socket_dir,
             mounts,
+        })
+    }
+
+    /// Each host path of `config` with its location: the data root, the socket directory, then each
+    /// mount source in flag order. `config` must be the one these were made for.
+    #[must_use]
+    pub fn entries<'own>(
+        &'own self,
+        config: &'own LaunchConfig,
+    ) -> Vec<(&'own AbsolutePath, &'own HostLocation)> {
+        let mut entries = vec![
+            (config.data_root().path(), &self.data_root),
+            (config.socket_dir().path(), &self.socket_dir),
+        ];
+        entries.extend(
+            config
+                .mounts()
+                .iter()
+                .map(|mount| mount.source().path())
+                .zip(&self.mounts),
+        );
+        entries
+    }
+}
+
+/// A daemon label that does not hold what [`daemon_labels`] writes.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum LabelError {
+    #[error("label {0} is missing")]
+    Missing(&'static str),
+    #[error("label {label} is invalid: {reason}")]
+    Invalid { label: &'static str, reason: String },
+}
+
+/// What a daemon holds on the node, read back from its labels: its instance, its ranges and its
+/// host paths with their identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonReservation {
+    pub instance: InstanceName,
+    pub subuid: IdRange,
+    pub subgid: IdRange,
+    pub storage: Vec<(AbsolutePath, HostLocation)>,
+}
+
+impl DaemonReservation {
+    /// Parses the labels [`daemon_labels`] wrote, re-checking every value as a flag would be.
+    ///
+    /// # Errors
+    ///
+    /// A [`LabelError`] naming the first label that is missing or does not parse.
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, LabelError> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Entry {
+            path: String,
+            device: Device,
+            fs_path: String,
+            file: FileId,
+        }
+        let get = |label: &'static str| {
+            labels
+                .get(label)
+                .map(String::as_str)
+                .ok_or(LabelError::Missing(label))
+        };
+        let entries: Vec<Entry> = serde_json::from_str(get(LABEL_STORAGE)?)
+            .map_err(|error| invalid_label(LABEL_STORAGE, error))?;
+        if entries.len() < 2 {
+            return Err(invalid_label(LABEL_STORAGE, "fewer than two paths"));
+        }
+        let storage = entries
+            .into_iter()
+            .map(|entry| {
+                let path = AbsolutePath::parse(&entry.path).map_err(|error| {
+                    invalid_label(LABEL_STORAGE, format!("{:?}: {error}", entry.path))
+                })?;
+                let placement = Placement::new(entry.device, &entry.fs_path)
+                    .map_err(|error| invalid_label(LABEL_STORAGE, error))?;
+                let location = HostLocation {
+                    placement,
+                    file: entry.file,
+                };
+                Ok((path, location))
+            })
+            .collect::<Result<Vec<_>, LabelError>>()?;
+        Ok(Self {
+            instance: InstanceName::parse(get(LABEL_INSTANCE)?)
+                .map_err(|error| invalid_label(LABEL_INSTANCE, error))?,
+            subuid: IdRange::parse(get(LABEL_SUBUID)?)
+                .map_err(|error| invalid_label(LABEL_SUBUID, error))?,
+            subgid: IdRange::parse(get(LABEL_SUBGID)?)
+                .map_err(|error| invalid_label(LABEL_SUBGID, error))?,
+            storage,
         })
     }
 }
@@ -317,31 +434,19 @@ pub fn daemon_labels(
     storage: &StorageIds,
 ) -> Result<HashMap<String, String>, SpecError> {
     #[derive(Serialize)]
-    struct Entry<'path> {
-        path: &'path str,
+    struct Entry<'own> {
+        path: &'own str,
         #[serde(flatten)]
-        id: FileId,
+        location: &'own HostLocation,
     }
-    let mut entries = vec![
-        Entry {
-            path: config.data_root().path().as_str(),
-            id: storage.data_root,
-        },
-        Entry {
-            path: config.socket_dir().path().as_str(),
-            id: storage.socket_dir,
-        },
-    ];
-    entries.extend(
-        config
-            .mounts()
-            .iter()
-            .zip(&storage.mounts)
-            .map(|(mount, id)| Entry {
-                path: mount.source().path().as_str(),
-                id: *id,
-            }),
-    );
+    let entries: Vec<Entry<'_>> = storage
+        .entries(config)
+        .into_iter()
+        .map(|(path, location)| Entry {
+            path: path.as_str(),
+            location,
+        })
+        .collect();
     let mut labels = owned_labels(ROLE_DAEMON, launcher);
     labels.extend([
         (LABEL_INSTANCE.to_owned(), config.instance().to_string()),
@@ -623,6 +728,13 @@ pub fn subid_archive(config: &LaunchConfig) -> io::Result<Vec<u8>> {
         archive.append_data(&mut header, name, content.as_bytes())?;
     }
     archive.into_inner()
+}
+
+fn invalid_label(label: &'static str, reason: impl std::fmt::Display) -> LabelError {
+    LabelError::Invalid {
+        label,
+        reason: reason.to_string(),
+    }
 }
 
 fn owned_labels(role: &str, launcher: &ContainerId) -> HashMap<String, String> {

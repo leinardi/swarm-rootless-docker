@@ -27,5 +27,8 @@
 
 pub mod cli;
 pub mod config;
+pub mod docker;
+pub mod mounts;
+pub mod node;
 pub mod spec;
 pub mod version;
