@@ -412,6 +412,7 @@ fn backoff() -> Duration {
     Duration::from_millis(BACKOFF_MIN_MILLIS + random % (BACKOFF_MAX_MILLIS - BACKOFF_MIN_MILLIS))
 }
 
-fn short(id: &str) -> String {
+/// A container ID shortened as Docker prints it, for logs and messages.
+pub(crate) fn short(id: &str) -> String {
     id.chars().take(SHORT_ID_LEN).collect()
 }

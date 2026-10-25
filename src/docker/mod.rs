@@ -37,16 +37,23 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
+use bollard::container::LogOutput;
 use bollard::errors::Error as BollardError;
 use bollard::models::ContainerInspectResponse;
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, ListContainersOptionsBuilder,
+    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+    WaitContainerOptionsBuilder,
 };
+use futures_util::StreamExt as _;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::spec::ContainerSpec;
 
 /// How long one Docker call may take, from the request to the end of the response body.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Output pieces buffered between the engine and the launcher's own stdout and stderr.
+const OUTPUT_BUFFER: usize = 64;
 
 /// A failed Docker call. Only [`DockerError::NotFound`] and [`DockerError::Conflict`] are ever
 /// acted on; anything else says nothing about the container and refuses.
@@ -79,7 +86,40 @@ pub struct ContainerInfo {
     /// Whether it runs (paused and restarting count as running, as in Docker). `None` when the
     /// engine reported no state: nothing may be concluded from it.
     pub running: Option<bool>,
+    /// The image ID it runs, `sha256:…`.
+    pub image: Option<String>,
+    /// Its healthcheck status (`starting`, `healthy`, `unhealthy`), when it has one.
+    pub health: Option<String>,
+    pub mounts: Vec<MountInfo>,
 }
+
+/// One of a container's mounts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MountInfo {
+    /// The host side; empty for a tmpfs.
+    pub source: String,
+    pub destination: String,
+}
+
+/// An image from an inspect call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageInfo {
+    pub id: String,
+    pub labels: HashMap<String, String>,
+}
+
+/// A piece of a container's output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Output {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+}
+
+/// A container's output, as attached: closed when the container's streams end.
+pub type OutputStream = mpsc::Receiver<Result<Output, DockerError>>;
+
+/// A container's exit code, once it is not running.
+pub type ExitWait = oneshot::Receiver<Result<i64, DockerError>>;
 
 /// The Docker calls the launcher makes. Every call that names a container takes its ID, except
 /// [`DockerApi::inspect_container`], which also resolves a name.
@@ -106,6 +146,41 @@ pub trait DockerApi: Sync {
 
     /// Removes a container by ID, stopping it first and removing its anonymous volumes.
     fn remove_container(&self, id: &str) -> impl Future<Output = Result<(), DockerError>> + Send;
+
+    /// Inspects an image by ID.
+    fn inspect_image(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = Result<ImageInfo, DockerError>> + Send;
+
+    /// The engine's data root (`DockerRootDir`).
+    fn docker_root(&self) -> impl Future<Output = Result<String, DockerError>> + Send;
+
+    /// Writes the tar `archive` into directory `dir` of a container, by ID.
+    fn upload(
+        &self,
+        id: &str,
+        dir: &str,
+        archive: Vec<u8>,
+    ) -> impl Future<Output = Result<(), DockerError>> + Send;
+
+    /// Attaches to a container's stdout and stderr, by ID. Only establishing the stream is
+    /// bounded; the stream lasts as long as the container's output.
+    fn attach(&self, id: &str) -> impl Future<Output = Result<OutputStream, DockerError>> + Send;
+
+    /// Asks for a container's exit code once it is not running, by ID. A container that already
+    /// stopped answers at once, so the wait may be asked for late.
+    fn wait(&self, id: &str) -> impl Future<Output = Result<ExitWait, DockerError>> + Send;
+
+    /// Starts a container, by ID.
+    fn start_container(&self, id: &str) -> impl Future<Output = Result<(), DockerError>> + Send;
+
+    /// Stops a container, by ID: `SIGTERM`, then `SIGKILL` after `timeout_secs`.
+    fn stop_container(
+        &self,
+        id: &str,
+        timeout_secs: i32,
+    ) -> impl Future<Output = Result<(), DockerError>> + Send;
 }
 
 /// The host socket, through bollard.
@@ -146,7 +221,15 @@ impl Bollard {
         &self,
         call: impl Future<Output = Result<T, BollardError>>,
     ) -> Result<T, DockerError> {
-        match tokio::time::timeout(self.timeout, call).await {
+        self.bounded_by(self.timeout, call).await
+    }
+
+    async fn bounded_by<T>(
+        &self,
+        timeout: Duration,
+        call: impl Future<Output = Result<T, BollardError>>,
+    ) -> Result<T, DockerError> {
+        match tokio::time::timeout(timeout, call).await {
             Ok(result) => result.map_err(|error| docker_error(&error)),
             Err(_elapsed) => Err(DockerError::Timeout),
         }
@@ -206,6 +289,96 @@ impl DockerApi for Bollard {
         self.bounded(self.client.remove_container(id, Some(options)))
             .await
     }
+
+    async fn inspect_image(&self, id: &str) -> Result<ImageInfo, DockerError> {
+        let image = self.bounded(self.client.inspect_image(id)).await?;
+        Ok(ImageInfo {
+            id: image.id.ok_or_else(|| missing("an inspected image's ID"))?,
+            labels: image
+                .config
+                .and_then(|config| config.labels)
+                .unwrap_or_default(),
+        })
+    }
+
+    async fn docker_root(&self) -> Result<String, DockerError> {
+        self.bounded(self.client.info())
+            .await?
+            .docker_root_dir
+            .ok_or_else(|| missing("the engine's DockerRootDir"))
+    }
+
+    async fn upload(&self, id: &str, dir: &str, archive: Vec<u8>) -> Result<(), DockerError> {
+        let options = UploadToContainerOptionsBuilder::new().path(dir).build();
+        self.bounded(self.client.upload_to_container(
+            id,
+            Some(options),
+            bollard::body_full(archive.into()),
+        ))
+        .await
+    }
+
+    async fn attach(&self, id: &str) -> Result<OutputStream, DockerError> {
+        let options = AttachContainerOptionsBuilder::new()
+            .stream(true)
+            .stdout(true)
+            .stderr(true)
+            .build();
+        let mut attached = self
+            .bounded(self.client.attach_container(id, Some(options)))
+            .await?
+            .output;
+        let (sender, receiver) = mpsc::channel(OUTPUT_BUFFER);
+        tokio::spawn(async move {
+            while let Some(item) = attached.next().await {
+                let output = item
+                    .map(|output| match output {
+                        LogOutput::StdErr { message } => Output::Stderr(message.to_vec()),
+                        LogOutput::StdOut { message }
+                        | LogOutput::Console { message }
+                        | LogOutput::StdIn { message } => Output::Stdout(message.to_vec()),
+                    })
+                    .map_err(|error| docker_error(&error));
+                if sender.send(output).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(receiver)
+    }
+
+    // Nothing to await here: the request goes out from the spawned task. The condition answers
+    // for a container that already stopped, so the late request loses nothing.
+    fn wait(&self, id: &str) -> impl Future<Output = Result<ExitWait, DockerError>> + Send {
+        let options = WaitContainerOptionsBuilder::new()
+            .condition("not-running")
+            .build();
+        let mut stream = Box::pin(self.client.wait_container(id, Some(options)));
+        let (sender, receiver) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = match stream.next().await {
+                Some(Ok(response)) => Ok(response.status_code),
+                // bollard reports a non-zero exit as an error carrying the code.
+                Some(Err(BollardError::DockerContainerWaitError { code, .. })) => Ok(code),
+                Some(Err(error)) => Err(docker_error(&error)),
+                None => Err(DockerError::Other("the wait stream ended empty".to_owned())),
+            };
+            let _ = sender.send(result);
+        });
+        std::future::ready(Ok(receiver))
+    }
+
+    async fn start_container(&self, id: &str) -> Result<(), DockerError> {
+        self.bounded(self.client.start_container(id, None)).await
+    }
+
+    async fn stop_container(&self, id: &str, timeout_secs: i32) -> Result<(), DockerError> {
+        let options = StopContainerOptionsBuilder::new().t(timeout_secs).build();
+        // The engine answers once the container stopped: allow for the stop timeout itself.
+        let budget = self.timeout + Duration::from_secs(u64::try_from(timeout_secs).unwrap_or(0));
+        self.bounded_by(budget, self.client.stop_container(id, Some(options)))
+            .await
+    }
 }
 
 fn container_info(response: ContainerInspectResponse) -> Result<ContainerInfo, DockerError> {
@@ -222,7 +395,23 @@ fn container_info(response: ContainerInspectResponse) -> Result<ContainerInfo, D
             .config
             .and_then(|config| config.labels)
             .unwrap_or_default(),
-        running: response.state.and_then(|state| state.running),
+        running: response.state.as_ref().and_then(|state| state.running),
+        image: response.image,
+        health: response
+            .state
+            .and_then(|state| state.health)
+            .and_then(|health| health.status)
+            .map(|status| status.to_string())
+            .filter(|status| !status.is_empty()),
+        mounts: response
+            .mounts
+            .unwrap_or_default()
+            .into_iter()
+            .map(|mount| MountInfo {
+                source: mount.source.unwrap_or_default(),
+                destination: mount.destination.unwrap_or_default(),
+            })
+            .collect(),
     })
 }
 
