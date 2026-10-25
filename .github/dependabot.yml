@@ -25,6 +25,29 @@ updates:
         patterns:
           - "*"
 
+  # The runtime base is the floating docker:<major>-dind-rootless tag, so the
+  # only update Dependabot can propose is the next Docker major (a tag-only
+  # FROM keeps its suffix and its precision: never 29.10-dind-rootless). That
+  # is a feature: the floating image tag moves to <major>-uid<UID>, which the
+  # homelab switches to deliberately; merge it by hand. Base fixes within a
+  # major arrive as new upstream digests, which the scheduled release
+  # rebuilds; no PR is involved.
+  - package-ecosystem: "docker"
+    directory: "/deployments/docker"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "feat(deps)"
+    labels: ["dependencies", "docker"]
+    ignore:
+      # The build stage's Rust is one line with rust-toolchain.toml, and its
+      # patch release is the one the RUST_VERSION argument and the musl
+      # standard libraries' sha256s are written for: a tag bump alone would
+      # break the build. Bump the image, RUST_VERSION and the checksums
+      # together, by hand. dhi.io also needs a login Dependabot does not have.
+      - dependency-name: "dhi.io/rust"
+      - dependency-name: "rust"
+
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:

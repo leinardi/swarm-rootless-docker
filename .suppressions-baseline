@@ -6,4 +6,5 @@
 # changing this file, so raising a count is a visible act rather than a side effect.
 #
 # Regenerate with: scripts/check-suppressions.sh --update
-# reviewed 20, 2026-10-25
+# reviewed 21, 2026-10-25
+droast-ignore/DF005	1

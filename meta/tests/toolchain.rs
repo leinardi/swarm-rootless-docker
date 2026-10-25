@@ -22,10 +22,10 @@
  * SOFTWARE.
  */
 
-//! The repository's tooling pins: one Rust line across rust-toolchain.toml, Cargo.toml and every
-//! CI toolchain step; one shellcheck between the hooks and CI; and no flag that makes a gate pass
-//! on nothing. The image's pins (and droast's, which its Dockerfile test drives) join these when
-//! the Dockerfile lands.
+//! The repository's tooling pins: one Rust line across rust-toolchain.toml, Cargo.toml, the image
+//! and every CI toolchain step; the image's toolchain patch and its musl standard libraries; one
+//! droast and one shellcheck between the hooks and CI; and no flag that makes a gate pass on
+//! nothing.
 
 use std::collections::BTreeMap;
 
@@ -34,6 +34,7 @@ use regex::Regex;
 use serde_yaml_ng::Value;
 
 const RUST_TOOLCHAIN_ACTION: &str = "dtolnay/rust-toolchain";
+const DOCKERFILE: &str = "deployments/docker/Dockerfile";
 
 fn re(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap_or_else(|error| panic!("invalid pattern {pattern}: {error}"))
@@ -195,8 +196,8 @@ fn github_steps() -> Vec<ActionStep> {
 }
 
 /// Go: `TestGoLineIsOneValue`. The Rust line (major.minor) is one value across rust-toolchain.toml,
-/// the MSRV in Cargo.toml and every CI toolchain step. The patch may differ: the MSRV names no
-/// patch at all.
+/// the MSRV in Cargo.toml, the build stage's image tag and every CI toolchain step. The patch may
+/// differ: the image carries its own patch release, and the MSRV names no patch at all.
 #[test]
 fn rust_line_is_one_value() {
     let mut sources = vec![
@@ -208,6 +209,7 @@ fn rust_line_is_one_value() {
             "Cargo.toml",
             r#"(?m)^rust-version = "(\d+\.\d+)(?:\.\d+)?"$"#,
         ),
+        source(DOCKERFILE, r"dhi\.io/rust:(\d+\.\d+)[.-]"),
     ];
     let mut steps = 0;
     for file in github_yaml() {
@@ -227,6 +229,46 @@ fn rust_line_is_one_value() {
         "no {RUST_TOOLCHAIN_ACTION} step found under .github"
     );
     expect_one_value("Rust line", &sources);
+}
+
+/// The build stage's standard libraries are written for the image's exact toolchain: the
+/// `RUST_VERSION` argument is the version in the image tag.
+#[test]
+fn image_toolchain_patch_is_the_standard_library_version() {
+    let dockerfile = repo::read(DOCKERFILE);
+    let tag = re(r"dhi\.io/rust:(\d+\.\d+\.\d+)-")
+        .captures(&dockerfile)
+        .map(|captures| captures[1].to_owned());
+    let argument = re(r"(?m)^ARG RUST_VERSION=(\S+)$")
+        .captures(&dockerfile)
+        .map(|captures| captures[1].to_owned());
+    assert!(
+        tag.is_some(),
+        "the build stage's tag names no exact Rust version"
+    );
+    assert_eq!(
+        tag, argument,
+        "the image's Rust and the RUST_VERSION of its musl standard libraries differ"
+    );
+}
+
+/// The meta crate's Dockerfile test runs the droast CI installs; it must be the release the
+/// pre-commit hook builds from source, whose rev Dependabot moves.
+#[test]
+fn droast_is_one_version() {
+    expect_one_value(
+        "droast",
+        &[
+            source(
+                ".pre-commit-config.yaml",
+                r"repo: https://github\.com/immanuwell/dockerfile-roast\s+rev:\s*([\d.]+)",
+            ),
+            source(
+                ".github/actions/setup-droast/action.yaml",
+                r#"DROAST_VERSION:\s*["']?([\d.]+)"#,
+            ),
+        ],
+    );
 }
 
 /// Go: `TestActionStepsArePinned`. Every Rust toolchain step under .github names an exact version.
