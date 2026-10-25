@@ -47,7 +47,11 @@ publish = false
 workspace = true
 
 [dependencies]
+bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "string"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.21"
 
 [profile.release]
