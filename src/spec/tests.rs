@@ -31,6 +31,7 @@ use super::*;
 use crate::config::{
     ExtraMount, HostPath, InstanceName, LaunchValues, MemoryBytes, NanoCpus, NetworkName, PidsLimit,
 };
+use crate::mounts::{Device, Placement};
 
 const IMAGE_ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const LAUNCHER_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -87,11 +88,47 @@ fn file_id(inode: u64) -> FileId {
     FileId { device: 42, inode }
 }
 
+/// `path` at its own position on filesystem 0:52, as file `inode`.
+fn location(path: &str, inode: u64) -> HostLocation {
+    HostLocation {
+        placement: Placement::new(
+            Device {
+                major: 0,
+                minor: 52,
+            },
+            path,
+        )
+        .unwrap(),
+        file: file_id(inode),
+    }
+}
+
+/// The JSON [`daemon_labels`] must write for [`location`], spelled out.
+fn entry_json(path: &str, inode: u64) -> String {
+    format!(
+        r#"{{"path":"{path}","device":{{"major":0,"minor":52}},"fs_path":"{path}","file":{{"device":42,"inode":{inode}}}}}"#
+    )
+}
+
 fn storage(config: &LaunchConfig) -> StorageIds {
-    let mounts = (0..config.mounts().len())
-        .map(|index| file_id(300 + u64::try_from(index).unwrap()))
+    let mounts = config
+        .mounts()
+        .iter()
+        .enumerate()
+        .map(|(index, mount)| {
+            location(
+                mount.source().path().as_str(),
+                300 + u64::try_from(index).unwrap(),
+            )
+        })
         .collect();
-    StorageIds::new(config, file_id(100), file_id(200), mounts).unwrap()
+    StorageIds::new(
+        config,
+        location(config.data_root().path().as_str(), 100),
+        location(config.socket_dir().path().as_str(), 200),
+        mounts,
+    )
+    .unwrap()
 }
 
 fn wire(spec: &ContainerSpec) -> Value {
@@ -212,11 +249,12 @@ fn daemon_spec_is_pinned() {
         "io.github.leinardi.swarm-rootless-docker.instance": "herdquay",
         "io.github.leinardi.swarm-rootless-docker.subuid": "100000:65536",
         "io.github.leinardi.swarm-rootless-docker.subgid": "200000:65536",
-        "io.github.leinardi.swarm-rootless-docker.storage": concat!(
-            r#"[{"path":"/mnt/pool/docker/herdquay-docker/data","device":42,"inode":100},"#,
-            r#"{"path":"/mnt/pool/docker/herdquay-docker/socket","device":42,"inode":200},"#,
-            r#"{"path":"/mnt/pool/docker/herdquay/workspace","device":42,"inode":300},"#,
-            r#"{"path":"/mnt/pool/docker/herdquay/cache","device":42,"inode":301}]"#
+        "io.github.leinardi.swarm-rootless-docker.storage": format!(
+            "[{},{},{},{}]",
+            entry_json("/mnt/pool/docker/herdquay-docker/data", 100),
+            entry_json("/mnt/pool/docker/herdquay-docker/socket", 200),
+            entry_json("/mnt/pool/docker/herdquay/workspace", 300),
+            entry_json("/mnt/pool/docker/herdquay/cache", 301),
         ),
     });
     let host_config = daemon_host_config(
@@ -259,9 +297,10 @@ fn daemon_spec_without_optional_flags_is_pinned() {
         "io.github.leinardi.swarm-rootless-docker.instance": "herdquay",
         "io.github.leinardi.swarm-rootless-docker.subuid": "100000:65536",
         "io.github.leinardi.swarm-rootless-docker.subgid": "100000:65536",
-        "io.github.leinardi.swarm-rootless-docker.storage": concat!(
-            r#"[{"path":"/mnt/pool/docker/herdquay-docker/data","device":42,"inode":100},"#,
-            r#"{"path":"/mnt/pool/docker/herdquay-docker/socket","device":42,"inode":200}]"#
+        "io.github.leinardi.swarm-rootless-docker.storage": format!(
+            "[{},{}]",
+            entry_json("/mnt/pool/docker/herdquay-docker/data", 100),
+            entry_json("/mnt/pool/docker/herdquay-docker/socket", 200),
         ),
     });
     let host_config = daemon_host_config(
@@ -492,9 +531,15 @@ fn container_ids() {
 }
 
 #[test]
-fn storage_ids_need_one_per_mount() {
+fn storage_ids_need_one_location_per_mount() {
     let config = config();
-    let error = StorageIds::new(&config, file_id(1), file_id(2), vec![file_id(3)]).unwrap_err();
+    let error = StorageIds::new(
+        &config,
+        location("/a", 1),
+        location("/b", 2),
+        vec![location("/c", 3)],
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         SpecError::StorageCount {
@@ -502,6 +547,32 @@ fn storage_ids_need_one_per_mount() {
             actual: 1
         }
     ));
+}
+
+/// Locations overlap by filesystem position (see `mounts`) or as the same file: a hard link
+/// elsewhere on the filesystem is the same file.
+#[test]
+fn host_locations_overlap() {
+    let tree = location("/srv/work/tree", 12);
+    assert!(tree.overlaps(&location("/srv/work/tree/subdir", 13)));
+    assert!(tree.overlaps(&location("/srv/work", 11)));
+    assert!(tree.overlaps(&location("/data/hard-link", 12)));
+    assert!(!tree.overlaps(&location("/srv/work/other", 14)));
+    let elsewhere = HostLocation {
+        placement: Placement::new(
+            Device {
+                major: 0,
+                minor: 53,
+            },
+            "/srv/work/tree",
+        )
+        .unwrap(),
+        file: FileId {
+            device: 53,
+            inode: 12,
+        },
+    };
+    assert!(!tree.overlaps(&elsewhere));
 }
 
 /// The uploaded files: exactly `subuid` and `subgid`, regular, root-owned, 0644, one line each.

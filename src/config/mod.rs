@@ -102,6 +102,16 @@ pub const RESERVED_CONTAINER_PATHS: &[&str] = &[
     "/var/run",
 ];
 
+/// Whether the clean absolute path `path` is `ancestor` or lies under it, component-wise.
+#[must_use]
+pub fn is_within(path: &str, ancestor: &str) -> bool {
+    ancestor == "/"
+        || path == ancestor
+        || path
+            .strip_prefix(ancestor)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// A flag value that does not parse or breaks a rule of its own.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValueError {
@@ -324,12 +334,7 @@ impl AbsolutePath {
     /// Whether this path is `other` or lies under it.
     #[must_use]
     pub fn is_within(&self, other: &str) -> bool {
-        other == "/"
-            || self.0 == other
-            || self
-                .0
-                .strip_prefix(other)
-                .is_some_and(|rest| rest.starts_with('/'))
+        is_within(&self.0, other)
     }
 
     /// Whether one of the two paths is the other or lies under it.
