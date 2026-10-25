@@ -1,80 +1,46 @@
 #!/usr/bin/env bash
 #
-# License header checker, off until the repository picks a license.
+# MIT License
 #
-# Once enabled, it fails on any tracked code file whose first lines do not carry the project's
-# license notice and copyright line, so a missing header is caught as surely as one copied from
-# another project. YAML, JSON and Markdown are never governed: they are configuration and
-# documentation, not code files in this sense.
+# Copyright (c) 2026 Roberto Leinardi
 #
-# The template ships no LICENSE, so nothing runs this yet. To enable it (AGENTS.md, "License
-# headers"):
-#   1. add the LICENSE and fill in the configuration block below;
-#   2. add the header to every file the script lists, this one included, with the year each file
-#      was first committed;
-#   3. wire the check-license-headers hook into .pre-commit-config.yaml.
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
 #
-# Exempt by default: the make-common files the bootstrap fetches (they carry make-common's own MIT
-# header; read from the Makefile's MK_COMMON_FILES) and scripts/bootstrap-mk-common.sh, which comes
-# from make-common too. Add generated and vendored files to the exemptions, each for a reason.
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
+# Licence header checker.
+#
+# swarm-rootless-docker is MIT-licensed, and every source file says so in its own header. This fails on
+# any tracked source file whose first lines do not carry the MIT notice with Roberto Leinardi's
+# copyright, so a header copied from another project is caught as surely as a missing one.
+#
+# Governed: Rust and shell sources, Dockerfiles, the Makefile and the repo-local .mk fragments.
+# Exempt: the make-common files the bootstrap fetches (the .mk snippets named in the Makefile's
+# MK_COMMON_FILES, and scripts/bootstrap-mk-common.sh), which are make-common's own files under its
+# licence. YAML, JSON and Markdown are never governed.
 
 set -euo pipefail
-
-# --- Configuration -------------------------------------------------------------------------------
-
-# Named in the messages, and in a GPL notice's "This file is part of ..." line.
-PROJECT_NAME="template-default"
-
-# The copyright holder, as the copyright line names it.
-COPYRIGHT_HOLDER="Roberto Leinardi"
-
-# The license, as the messages name it.
-LICENSE_NAME=""
-
-# Lines the header must contain, verbatim. Empty means "not configured", and the check refuses to
-# run rather than pass on nothing. Copy one preset, or write your own:
-#
-#   MIT:
-#     "MIT License"
-#     "Permission is hereby granted, free of charge, to any person obtaining a copy"
-#     "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR"
-#   Apache-2.0:
-#     "Licensed under the Apache License, Version 2.0 (the \"License\");"
-#     "you may not use this file except in compliance with the License."
-#   GPL-3.0-or-later:
-#     "This file is part of ${PROJECT_NAME}."
-#     "it under the terms of the GNU General Public License as published by"
-#     "the Free Software Foundation, either version 3 of the License, or"
-#     "(at your option) any later version."
-REQUIRED_LINES=()
-
-# The copyright line: the year (or years) and the holder, on one line. Matches both
-# "Copyright (c) 2026 Name" (MIT, GPL) and "Copyright 2026 Name." (Apache-2.0). An extended regex,
-# so a holder with regex metacharacters needs them escaped.
-COPYRIGHT_REGEX="Copyright (\\(c\\) )?[0-9]{4}([-, ]+[0-9]{4})* ${COPYRIGHT_HOLDER}\\.?\$"
-
-# How many leading lines the header must sit in: a shebang and a comment line may precede it.
-HEADER_WINDOW=30
-
-# Governed file extensions (without the dot), and governed file names matched on the base name.
-# Repo-local .mk fragments are governed too; the make-common ones are exempt below.
-GOVERNED_EXTENSIONS=(sh bash py go ts tsx mts cts js mjs cjs vue rs rb tf lua)
-GOVERNED_NAMES=(Makefile Dockerfile "*.Dockerfile")
-
-# Path prefixes and exact paths that are not this project's own code.
-EXEMPT_PREFIXES=()
-EXEMPT_PATHS=(
-	"scripts/bootstrap-mk-common.sh"
-)
-
-# --- End of configuration ------------------------------------------------------------------------
 
 usage() {
 	cat <<'USAGE'
 Usage: scripts/check-license-headers.sh
 
-Checks every tracked code file for the license header configured at the top of this script and
-lists the files that lack it. Run from anywhere inside the repository.
+Checks every tracked source file for the swarm-rootless-docker MIT header and lists the files that
+lack it. Run from anywhere inside the repository.
 USAGE
 }
 
@@ -83,13 +49,26 @@ if [[ $# -gt 0 ]]; then
 	exit 2
 fi
 
-if [[ ${#REQUIRED_LINES[@]} -eq 0 || -z ${LICENSE_NAME} ]]; then
-	echo "The license-header check is not configured: set LICENSE_NAME and REQUIRED_LINES at the" >&2
-	echo "top of scripts/check-license-headers.sh (AGENTS.md, \"License headers\")." >&2
-	exit 2
-fi
-
 cd "$(git rev-parse --show-toplevel)"
+
+# How many leading lines the header must sit in: a shebang or a Dockerfile syntax directive, and
+# the comment opener, may precede it.
+HEADER_WINDOW=30
+
+# Lines of the notice, compared whole once the comment prefix is stripped.
+REQUIRED_LINES=(
+	"MIT License"
+	"Permission is hereby granted, free of charge, to any person obtaining a copy"
+	"The above copyright notice and this permission notice shall be included in all"
+	"THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR"
+)
+# The year is the file's first commit; a range (2025-2026) is allowed too.
+COPYRIGHT_RE='^Copyright \(c\) [0-9]{4}(-[0-9]{4})? Roberto Leinardi$'
+
+# Exact paths fetched from make-common, beside the .mk snippets read from the Makefile below.
+EXEMPT_PATHS=(
+	"scripts/bootstrap-mk-common.sh"
+)
 
 # The shared make fragments, read from the Makefile so the list cannot drift from what the
 # bootstrap actually fetches.
@@ -98,26 +77,20 @@ mk_common_files() {
 }
 
 is_governed() {
-	local path="$1" base entry
+	local path="$1" base
 	base="${path##*/}"
 
-	if [[ ${path} == .mk/*.mk ]]; then
+	case "${path}" in
+	*.rs | *.sh | .mk/*.mk)
 		return 0
-	fi
+		;;
+	esac
 
-	for entry in "${GOVERNED_EXTENSIONS[@]}"; do
-		if [[ ${base} == *."${entry}" ]]; then
-			return 0
-		fi
-	done
-
-	for entry in "${GOVERNED_NAMES[@]}"; do
-		# Unquoted on purpose: an entry may be a glob.
-		# shellcheck disable=SC2053
-		if [[ ${base} == ${entry} ]]; then
-			return 0
-		fi
-	done
+	case "${base}" in
+	Makefile | Dockerfile | *.Dockerfile)
+		return 0
+		;;
+	esac
 
 	return 1
 }
@@ -125,13 +98,7 @@ is_governed() {
 is_exempt() {
 	local path="$1" entry
 
-	for entry in ${EXEMPT_PREFIXES[@]+"${EXEMPT_PREFIXES[@]}"}; do
-		if [[ ${path} == "${entry}"* ]]; then
-			return 0
-		fi
-	done
-
-	for entry in ${EXEMPT_PATHS[@]+"${EXEMPT_PATHS[@]}"}; do
+	for entry in "${EXEMPT_PATHS[@]}"; do
 		if [[ ${path} == "${entry}" ]]; then
 			return 0
 		fi
@@ -147,24 +114,20 @@ is_exempt() {
 }
 
 has_header() {
-	local path="$1" head line
-	head="$(head -n "${HEADER_WINDOW}" -- "${path}")"
+	local path="$1" body line
+	# The header without its comment prefix: Rust writes " * ", shell, make and Docker "# ".
+	body="$(head -n "${HEADER_WINDOW}" -- "${path}" | sed -E 's/^(#| \*) //')"
 
 	for line in "${REQUIRED_LINES[@]}"; do
-		if [[ ${head} != *"${line}"* ]]; then
+		if ! grep -qxF -- "${line}" <<<"${body}"; then
 			return 1
 		fi
 	done
 
-	grep -Eq -- "${COPYRIGHT_REGEX}" <<<"${head}"
+	grep -qE -- "${COPYRIGHT_RE}" <<<"${body}"
 }
 
 COMMON_FILES="$(mk_common_files)"
-if [[ -z ${COMMON_FILES} ]]; then
-	echo "Could not read MK_COMMON_FILES from the Makefile." >&2
-	exit 1
-fi
-
 missing=()
 checked=0
 
@@ -185,16 +148,12 @@ while IFS= read -r -d '' path; do
 	fi
 done < <(git ls-files -z)
 
-if [[ ${checked} -eq 0 ]]; then
-	echo "No governed files found: the check has nothing to check." >&2
-	exit 1
-fi
-
 if [[ ${#missing[@]} -gt 0 ]]; then
-	echo "These files lack the ${PROJECT_NAME} ${LICENSE_NAME} license header:" >&2
+	echo "These files lack the swarm-rootless-docker MIT header:" >&2
 	printf '  %s\n' "${missing[@]}" >&2
-	echo "Copy the header from a file that has it, with the year the file was first committed." >&2
+	echo "Copy the header from any Rust or shell file (IntelliJ: the MIT copyright profile), with the" >&2
+	echo "year of the file's first commit." >&2
 	exit 1
 fi
 
-echo "License headers: ${checked} files checked, all carry the ${LICENSE_NAME} header."
+echo "License headers: ${checked} files checked, all carry the MIT header."

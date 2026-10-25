@@ -24,3 +24,29 @@ updates:
       pre-commit-hooks:
         patterns:
           - "*"
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    # fix, not chore: the release version is derived from commit types, so a
+    # crate bump (security fixes included) produces a patch release of the
+    # image. Dev-dependencies never reach the binary, so their bumps are
+    # chore(deps) and in a group of their own: one grouped PR carries a single
+    # prefix. The meta crate's dependencies count as production ones here (it
+    # is a workspace member), so a bump of only those releases an unchanged
+    # binary: harmless, a patch with the same launcher.
+    commit-message:
+      prefix: "fix(deps)"
+      prefix-development: "chore(deps)"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+    groups:
+      cargo-crates:
+        dependency-type: "production"
+        patterns:
+          - "*"
+      cargo-dev-crates:
+        dependency-type: "development"
+        patterns:
+          - "*"

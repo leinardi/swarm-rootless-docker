@@ -1,16 +1,18 @@
 ---
 name: adversarial-review
 description: >
-  Adversarial code review of a set of changes to template-default, the default leinardi/*
-  repository template — working tree, staged diff, a branch vs main, a commit range, or a PR.
-  Hunts for workflow permission and injection problems, unpinned actions, shell recipes that
-  break on unusual input, commit types that ship the wrong release, and docs that no longer
-  match the code, then reports ranked findings. Use when the user asks to review changes/a
-  diff/a PR/a branch, "check my work before committing", "is this ready to merge", or "poke
-  holes in this".
+  Adversarial code review of changes to swarm-rootless-docker — working tree, staged diff, a
+  branch vs main, a commit range, or a PR — in any language (Rust, bash, Dockerfile, Makefile,
+  YAML, docs). Loads rust-style-guide for Rust paths, hunts for real defects and for anything
+  that widens the daemon container's fixed security profile, lets the launcher touch a container
+  it does not own, races the node lock, trusts a lexical path check as a boundary, or ships the
+  wrong image or release, then reports ranked findings with a verdict. Use when the user asks to
+  review changes, a diff, a PR or a branch, to "check my work before committing", whether it "is
+  ready to merge", or to "poke holes in this" — even if they don't name a language or say the
+  word "review".
 ---
 
-# Adversarial Review — template-default
+# Adversarial Review — swarm-rootless-docker
 
 You are a hostile reviewer. Assume the change is **wrong until proven right**. Find the input,
 state or event where it breaks. A review that finds nothing is only credible after you tried to
@@ -21,7 +23,7 @@ Copy this checklist and tick items as you go:
 ```text
 Review progress:
 - [ ] 1. Diff and intent established (default scope if none given)
-- [ ] 2. AGENTS.md and the contracts it names read
+- [ ] 2. AGENTS.md and the contracts it names read; `rust-style-guide` loaded for Rust paths
 - [ ] 3. Repository invariants checked
 - [ ] 4. Adversarial passes run
 - [ ] 5. Findings confirmed or dropped; gates run
@@ -47,10 +49,69 @@ file in full, not just the hunks, and the files that call or document it.
 
 ## 2. Load project authority
 
-Read `AGENTS.md` first: its conventions are the review checklist's floor, and `README.md` is the
-user-facing contract a change must keep true.
+Read `AGENTS.md` first: its conventions are the review checklist's floor, and `README.md` and
+`SECURITY.md` are the user-facing contract a change must keep true.
+
+For any `**/*.rs` path (and `Cargo.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml`), load
+`rust-style-guide` before judging it; its rules are findings even when clippy is green. Every
+other path gets the passes in §4 and the invariants in §3 with the same rigor.
 
 ## 3. Repository invariants — check on every review
+
+### The daemon container's profile is fixed
+
+The security boundary of the whole project. Any widening is **critical**.
+
+- The daemon container gets exactly: `Privileged=false`, `CapDrop=[ALL]`,
+  `CapAdd=[SETUID, SETGID]`, `SecurityOpt=[seccomp=unconfined, apparmor=unconfined,
+  systempaths=unconfined]`, one device `/dev/net/tun`, the image's labelled non-zero UID:GID
+  with no `GroupAdd`, private PID/IPC/cgroup namespaces, default userns, no port bindings, no
+  host network. `no-new-privileges` is absent on purpose (it disables `newuidmap`'s file caps).
+- No configuration path (flag, label, environment, compose file) can add a capability, a
+  device, a host namespace, `privileged`, a host-socket mount, or a host system path; a new flag
+  is a widening and needs a reason in the README and `SECURITY.md`.
+- The spec is built from validated types in one function and pinned whole by a unit test; a
+  change to that test without a matching docs change is a finding.
+- `Mounts`, never `Binds`. The image's two `VOLUME`s are covered. No TCP listener: the daemon
+  command is fixed and never reaches the upstream entrypoint's default-arguments path.
+- `/etc/subuid` and `/etc/subgid` in the daemon container are root-owned and unwritable by the
+  daemon UID.
+
+### The launcher touches only what it provably owns
+
+- Stops and removes go **by ID**. A container is removed only when its owner launcher is
+  confirmed NotFound or not running; an inspect error, a nil state or a foreign container
+  refuses.
+- The node lock (a never-started lock container) is held across list, probe, validate and
+  create, released on every path, and recovered only when its holder is confirmed gone.
+- Every listing that decides a reservation uses `all = true`: a created, not started daemon is a
+  reservation.
+
+### Lexical checks are not the boundary
+
+- A path decision that relies on the launcher's own view of a host path, or on a lexical
+  denylist, is a finding: Docker resolves bind sources on the host. The host-side probe decides
+  (no symlinks, root-owned trivial-ACL ancestry, inode identities, host ID ranges), and any
+  probe failure refuses.
+- The subordinate range never overlaps a host user, a host subordinate entry, another
+  reservation, 0 or the consumer's UID/GID.
+
+### Shutdown and streams
+
+- One shutdown budget from the signal; no per-step fresh grace period; the budget stays under
+  the documented `stop_grace_period`.
+- Every Docker call has a timeout; stream setups are raced against timeout and cancellation;
+  the exit status and the last log lines survive SIGTERM.
+
+### Images and releases
+
+- The base is the floating `docker:<major>-dind-rootless` from the Dockerfile of the commit
+  being built, pinned per build to the digest the release resolved, and recorded in the image.
+  A release that builds HEAD needs a green `ci-result` on that exact SHA; a base-only rebuild
+  builds the last release's SHA with that SHA's own base, context key and floating tag, never
+  HEAD's.
+- Tags are immutable; a floating `<major>-uid<UID>` tag only moves to the highest release of
+  that Docker major. Nothing is tagged before the image is tested and scanned.
 
 ### Workflows
 
@@ -109,8 +170,11 @@ it, report it; if not, dig once more, then drop it. No named input and wrong res
 | Diff touched | Run |
 | --- | --- |
 | anything | `make check` |
+| Rust, `Cargo.*`, `deny.toml` | `make verify`; `make rust-deny` for dependency changes |
+| `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |
 | a workflow | `make check` (actionlint), then reason through each trigger it has: pull request, push, dispatch, schedule |
-| `scripts/check-license-headers.sh` | the script, once as is and once on a file without the header (configure it first in a scratch copy if the repository has none) |
+| `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
+| the launcher, the spec, the probe or the image | the integration tests (`SRD_IT=1`) on a host with Docker |
 
 Say which gates you could not run rather than implying they passed.
 

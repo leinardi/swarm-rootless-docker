@@ -1,0 +1,53 @@
+[workspace]
+members = [".", "meta"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+authors = ["Roberto Leinardi"]
+repository = "https://github.com/leinardi/swarm-rootless-docker"
+
+# The lint set lives here once. Every member opts in with `[lints] workspace = true` (a member does
+# not inherit it otherwise, and the meta crate asserts that each one does), and every clippy run is
+# workspace-wide.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Only `#[expect(lint, reason = "...")]` may silence a lint: it fails once the lint stops firing,
+# and the reason is mandatory. Every one is counted by scripts/check-suppressions.sh.
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
+# No panics outside tests; clippy.toml allows both in tests.
+unwrap_used = "deny"
+expect_used = "deny"
+# Output goes through the logger, or an explicit writeln! to a handle.
+print_stdout = "deny"
+print_stderr = "deny"
+# A match on an enum names every variant, so a new variant is a compile-time decision everywhere.
+wildcard_enum_match_arm = "deny"
+# Descriptive names, no single-letter identifiers.
+min_ident_chars = "deny"
+
+[package]
+name = "swarm-rootless-docker"
+version = "0.0.0"
+description = "Launcher and image for a dedicated rootless Docker daemon per Docker Swarm service"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

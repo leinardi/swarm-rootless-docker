@@ -1,0 +1,4 @@
+# Applies to every workspace member: clippy reads the clippy.toml of the workspace root.
+
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
