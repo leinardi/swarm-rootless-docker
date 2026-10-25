@@ -27,9 +27,12 @@
 
 pub mod cli;
 pub mod config;
+pub mod daemon;
 pub mod docker;
 pub mod mounts;
 pub mod node;
 pub mod probe;
+pub mod socket;
 pub mod spec;
+pub mod status;
 pub mod version;
