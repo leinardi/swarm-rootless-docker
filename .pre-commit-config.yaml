@@ -11,8 +11,11 @@ repos:
     rev: v6.0.0
     hooks:
       - id: check-merge-conflict
+      # The fixtures are captured bytes: never rewritten.
       - id: end-of-file-fixer
+        exclude: ^testdata/
       - id: trailing-whitespace
+        exclude: ^testdata/
       - id: check-yaml
       - id: check-json
       - id: check-toml

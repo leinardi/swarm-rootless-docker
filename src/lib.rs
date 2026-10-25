@@ -30,5 +30,6 @@ pub mod config;
 pub mod docker;
 pub mod mounts;
 pub mod node;
+pub mod probe;
 pub mod spec;
 pub mod version;

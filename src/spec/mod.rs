@@ -44,7 +44,9 @@ use bollard::models::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::{AbsolutePath, IdRange, InstanceName, LaunchConfig, NanoCpus};
+use crate::config::{
+    AbsolutePath, HostPath, IdRange, InstanceName, LaunchConfig, MAX_EXTRA_MOUNTS, NanoCpus,
+};
 use crate::mounts::{Device, Placement};
 
 /// The prefix of every container name and label key.
@@ -259,7 +261,7 @@ pub struct FileId {
 /// Two paths overlap on the host when they share the filesystem and one position contains the
 /// other, whatever bind mount or second path either was reached through, or when they are the
 /// same file (a hard link).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostLocation {
     #[serde(flatten)]
     pub placement: Placement,
@@ -557,19 +559,23 @@ pub fn daemon_spec(
     })
 }
 
-/// What the probe checks on the host: the paths the daemon will get and the ranges it will map.
-/// Passed to the probe container as one JSON argument.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// What the probe checks on the host: the paths the daemon will get, the host paths none of them
+/// may touch, and the ranges it will map. Passed to the probe container as one JSON argument, and
+/// validated again there ([`ProbeRequest::validate`]): the probe trusts no field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProbeRequest {
     data_root: String,
     socket_dir: String,
     mount_sources: Vec<String>,
+    denied: Vec<String>,
     owner_uid: u32,
     subuid: Range,
     subgid: Range,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Range {
     start: u32,
     count: u32,
@@ -584,11 +590,24 @@ impl From<IdRange> for Range {
     }
 }
 
+/// A [`ProbeRequest`] whose every field passed the same rules as the flags it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidProbeRequest {
+    pub data_root: HostPath,
+    pub socket_dir: HostPath,
+    pub mount_sources: Vec<HostPath>,
+    /// Host paths no path may overlap: the host's Docker data root and socket.
+    pub denied: Vec<AbsolutePath>,
+    pub owner_uid: u32,
+    pub subuid: IdRange,
+    pub subgid: IdRange,
+}
+
 impl ProbeRequest {
-    /// The request for `config`: its paths, the image UID the data root and socket directory must
-    /// belong to, and its ranges.
+    /// The request for `config`: its paths, the host paths none may overlap, the image UID the
+    /// data root and socket directory must belong to, and its ranges.
     #[must_use]
-    pub fn new(config: &LaunchConfig, image: &ImageIdentity) -> Self {
+    pub fn new(config: &LaunchConfig, image: &ImageIdentity, denied: &[AbsolutePath]) -> Self {
         Self {
             data_root: config.data_root().path().as_str().to_owned(),
             socket_dir: config.socket_dir().path().as_str().to_owned(),
@@ -597,10 +616,51 @@ impl ProbeRequest {
                 .iter()
                 .map(|mount| mount.source().path().as_str().to_owned())
                 .collect(),
+            denied: denied.iter().map(|path| path.as_str().to_owned()).collect(),
             owner_uid: image.uid,
             subuid: config.subuid().into(),
             subgid: config.subgid().into(),
         }
+    }
+
+    /// Checks every field again, by the flags' rules.
+    ///
+    /// # Errors
+    ///
+    /// A message naming the first field that breaks one.
+    pub fn validate(&self) -> Result<ValidProbeRequest, String> {
+        let host = |field: &str, value: &str| {
+            HostPath::parse(value).map_err(|error| format!("{field} {value:?}: {error}"))
+        };
+        let range = |field: &str, range: Range| {
+            IdRange::parse(&format!("{}:{}", range.start, range.count))
+                .map_err(|error| format!("{field}: {error}"))
+        };
+        if self.mount_sources.len() > MAX_EXTRA_MOUNTS {
+            return Err(format!("{} mount sources", self.mount_sources.len()));
+        }
+        if self.owner_uid == 0 || self.owner_uid == u32::MAX {
+            return Err(format!("owner_uid {}", self.owner_uid));
+        }
+        Ok(ValidProbeRequest {
+            data_root: host("data_root", &self.data_root)?,
+            socket_dir: host("socket_dir", &self.socket_dir)?,
+            mount_sources: self
+                .mount_sources
+                .iter()
+                .map(|source| host("mount source", source))
+                .collect::<Result<_, _>>()?,
+            denied: self
+                .denied
+                .iter()
+                .map(|path| {
+                    AbsolutePath::parse(path).map_err(|error| format!("denied {path:?}: {error}"))
+                })
+                .collect::<Result<_, _>>()?,
+            owner_uid: self.owner_uid,
+            subuid: range("subuid", self.subuid)?,
+            subgid: range("subgid", self.subgid)?,
+        })
     }
 }
 

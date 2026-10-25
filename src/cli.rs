@@ -67,6 +67,13 @@ pub fn command() -> clap::Command {
 pub enum Command {
     /// Create, supervise and stop this instance's daemon container (the Swarm service mode).
     Launch(LaunchArgs),
+    /// Check the host paths and ranges of a request, in the probe container the launcher creates
+    /// (internal: the request is the launcher's JSON).
+    #[command(hide = true)]
+    Probe {
+        /// The request, as JSON.
+        request: String,
+    },
 }
 
 /// The flags of `launch`: what differs between consumers, and nothing about the daemon's
@@ -182,9 +189,27 @@ mod tests {
 
     #[test]
     fn required_flags_are_enough() {
-        let Command::Launch(args) = parse(&[]).unwrap().command;
+        let Command::Launch(args) = parse(&[]).unwrap().command else {
+            panic!("not launch");
+        };
         assert_eq!(args.instance.as_str(), "herdquay");
         assert!(args.subgid.is_none() && args.cpus.is_none() && args.mounts.is_empty());
+    }
+
+    /// `probe` takes exactly one argument and stays out of the help: it is the launcher's.
+    #[test]
+    fn probe_is_internal() {
+        let matches = command()
+            .try_get_matches_from(["swarm-rootless-docker", "probe", "{}"])
+            .unwrap();
+        let cli = Cli::from_arg_matches(&matches).unwrap();
+        assert!(matches!(cli.command, Command::Probe { request } if request == "{}"));
+        for extra in [&["probe"][..], &["probe", "{}", "{}"]] {
+            let argv = ["swarm-rootless-docker"].iter().chain(extra);
+            assert!(command().try_get_matches_from(argv).is_err(), "{extra:?}");
+        }
+        let help = command().render_help().to_string();
+        assert!(!help.contains("probe"), "{help}");
     }
 
     #[test]
@@ -192,7 +217,10 @@ mod tests {
         let Command::Launch(args) =
             parse(&["--mount", "/mnt/a:/srv/a", "--mount", "/mnt/b:/srv/b:ro"])
                 .unwrap()
-                .command;
+                .command
+        else {
+            panic!("not launch");
+        };
         assert_eq!(args.mounts.len(), 2);
     }
 
