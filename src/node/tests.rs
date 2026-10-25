@@ -122,7 +122,16 @@ fn removed(docker: &FakeDocker) -> Vec<String> {
         .into_iter()
         .filter_map(|call| match call {
             Call::Remove(id) => Some(id),
-            Call::List { .. } | Call::Inspect(_) | Call::Create(_) => None,
+            Call::List { .. }
+            | Call::Inspect(_)
+            | Call::Create(_)
+            | Call::InspectImage(_)
+            | Call::DockerRoot
+            | Call::Upload(_)
+            | Call::Attach(_)
+            | Call::Wait(_)
+            | Call::Start(_)
+            | Call::Stop(_) => None,
         })
         .collect()
 }

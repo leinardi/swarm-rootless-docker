@@ -27,9 +27,12 @@
 use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use swarm_rootless_docker::cli::{Cli, Command};
 use swarm_rootless_docker::config::LaunchConfig;
+use swarm_rootless_docker::launcher::{self, Console};
+use swarm_rootless_docker::logger::{self, LogFormat, LogLevel};
 use swarm_rootless_docker::probe::{self, ProbeReport};
 use swarm_rootless_docker::{daemon, status};
 
@@ -37,26 +40,27 @@ use swarm_rootless_docker::{daemon, status};
 const EXIT_FAILURE: u8 = 1;
 /// Exit code of a usage or configuration error (clap uses the same for its own).
 const EXIT_USAGE: u8 = 2;
+/// How long the tasks still running when the launcher ends get.
+const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
+/// How long the output still queued at the end gets, per stream.
+const OUTPUT_FLUSH: Duration = Duration::from_secs(1);
 
 fn main() -> ExitCode {
     let cli = Cli::parse_args();
     match cli.command {
-        Command::Launch(args) => match LaunchConfig::new(args.into_values()) {
-            Ok(_config) => {
-                let _ = writeln!(
-                    io::stderr(),
-                    "swarm-rootless-docker: launch: the launcher is not implemented yet"
-                );
-                ExitCode::from(EXIT_FAILURE)
+        Command::Launch(args) => {
+            let (level, format) = (args.log_level, args.log_format);
+            match LaunchConfig::new(args.into_values()) {
+                Ok(config) => launch(&config, level, format),
+                Err(config_error) => {
+                    let _ = writeln!(
+                        io::stderr(),
+                        "swarm-rootless-docker: invalid configuration: {config_error}"
+                    );
+                    ExitCode::from(EXIT_USAGE)
+                }
             }
-            Err(config_error) => {
-                let _ = writeln!(
-                    io::stderr(),
-                    "swarm-rootless-docker: invalid configuration: {config_error}"
-                );
-                ExitCode::from(EXIT_USAGE)
-            }
-        },
+        }
         Command::Probe { request } => probe(&request),
         Command::Daemon => {
             let error = daemon::run();
@@ -69,6 +73,45 @@ fn main() -> ExitCode {
             status::QUERY_TIMEOUT,
         )),
     }
+}
+
+/// Runs the launcher on a single-threaded runtime, ended with a timeout so a task that is still
+/// blocked cannot hold the process open.
+fn launch(config: &LaunchConfig, level: LogLevel, format: LogFormat) -> ExitCode {
+    let log = match logger::init(level, format) {
+        Ok(log) => log,
+        Err(error) => {
+            let _ = writeln!(io::stderr(), "swarm-rootless-docker: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let console = match Console::process() {
+        Ok(console) => console,
+        Err(error) => {
+            let _ = writeln!(
+                io::stderr(),
+                "swarm-rootless-docker: start the output writers: {error}"
+            );
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!(%error, "build the runtime");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let code = runtime.block_on(launcher::launch(config, console.clone()));
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
+    // The last of the daemon's output and the launcher's own last lines, unless a stream is
+    // stuck: then they are lost, and the process still ends.
+    let _ = console.flush(OUTPUT_FLUSH);
+    let _ = log.flush(OUTPUT_FLUSH);
+    ExitCode::from(code)
 }
 
 /// A healthcheck's result: exit 0, or the reason on stderr and exit 1.

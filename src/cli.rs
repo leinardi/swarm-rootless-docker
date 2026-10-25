@@ -32,6 +32,7 @@ use crate::config::{
     ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NanoCpus, NetworkName,
     PidsLimit,
 };
+use crate::logger::{LogFormat, LogLevel};
 use crate::version;
 
 /// The binary's command line.
@@ -119,6 +120,12 @@ pub struct LaunchArgs {
     /// CPU limit of the daemon container, in CPUs (e.g. 2 or 1.5).
     #[arg(long, value_name = "CPUS", value_parser = NanoCpus::parse)]
     pub cpus: Option<NanoCpus>,
+    /// The launcher's own log level.
+    #[arg(long, value_enum, default_value_t = LogLevel::Info)]
+    pub log_level: LogLevel,
+    /// The launcher's own log format, on stderr.
+    #[arg(long, value_enum, default_value_t = LogFormat::Text)]
+    pub log_format: LogFormat,
 }
 
 impl LaunchArgs {
@@ -249,6 +256,29 @@ mod tests {
         for internal in ["probe", "daemon", "daemon-health", "healthcheck"] {
             assert!(!help.contains(&format!("\n  {internal} ")), "{help}");
         }
+    }
+
+    #[test]
+    fn log_flags_default_to_info_text() {
+        let Command::Launch(args) = parse(&[]).unwrap().command else {
+            panic!("not launch");
+        };
+        assert_eq!(
+            (args.log_level, args.log_format),
+            (LogLevel::Info, LogFormat::Text)
+        );
+        let Command::Launch(args) = parse(&["--log-level", "debug", "--log-format", "json"])
+            .unwrap()
+            .command
+        else {
+            panic!("not launch");
+        };
+        assert_eq!(
+            (args.log_level, args.log_format),
+            (LogLevel::Debug, LogFormat::Json)
+        );
+        let error = parse(&["--log-level", "verbose"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
