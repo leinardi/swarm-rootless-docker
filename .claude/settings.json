@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make check)",
+      "Bash(make check-stage)",
+      "Bash(make rust-build)",
+      "Bash(make rust-test)",
+      "Bash(make rust-clippy)",
+      "Bash(make rust-fmt)",
+      "Bash(make rust-fmt-check)",
+      "Bash(make verify)",
+      "Bash(make verify-rust)",
+      "Bash(cargo test *)",
+      "Bash(cargo build *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(rustfmt *)",
+      "Bash(pre-commit run *)",
+      "Bash(scripts/check-*.sh)",
+      "Bash(scripts/check-*.sh *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/hooks/rustfmt-on-edit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+#:schema https://raw.githubusercontent.com/immanuwell/dockerfile-roast/main/schemas/droast.schema.json
+
+# Balanced checks for production Dockerfiles
+preset = "production"
+
+# Show warnings and errors, but fail CI only on errors
+min-severity = "warning"
+fail-on = "error"
+
+# Technical diagnostics without humorous messages
+no-roast = true
+
+# Allow justified exceptions, but require explanations
+inline-suppressions = true
+require-suppression-reason = true
+report-unused-suppressions = true
+
+# DF005 (apt-get install without pinned versions) and DF052 (apk add without pinned versions) are
+# info, so min-severity hides them on purpose. An unpinned install still carries an inline
+# suppression with its reason (a republished base tag refreshes the package index, so an exact pin
+# would stop building), and every download it fetches is checked by sha256.
+
+# Reject any label outside [required-labels]
+strict-labels = true
+
+# Escalate important reproducibility and security rules
+[severity-overrides]
+DF001 = "error" # Avoid :latest base images
+DF057 = "error" # Require pipefail for shell pipelines
+
+# The seven OCI labels of the shipped image, each required (DF074 when missing) and validated. The
+# image's own labels (UID/GID, base digest) join this table with the Dockerfile.
+[required-labels]
+"org.opencontainers.image.title" = "text"
+"org.opencontainers.image.description" = "text"
+"org.opencontainers.image.source" = "url"
+"org.opencontainers.image.version" = "text"
+"org.opencontainers.image.revision" = "text"
+"org.opencontainers.image.created" = "text"
+"org.opencontainers.image.licenses" = "spdx"
+
+# ShellCheck must be available; never silently skip it
+[shellcheck]
+mode = "required"
+exclude = []
+
+# Match Docker/BuildKit context conventions
+[workflow]
+engine = "docker"

@@ -45,7 +45,8 @@ assignees: []
 
 * Project version / commit SHA: `?`
 * Operating system and version: `?`
-* Runtime and version (e.g., Node, Python, Java): `?`
+* Image tag and digest (`docker image inspect`), or `swarm-rootless-docker --version`: `?`
+* Docker version and host kernel (`docker version`, `uname -r`): `?`
 * Any relevant tooling / dependencies and versions: `?`
 
 ---
