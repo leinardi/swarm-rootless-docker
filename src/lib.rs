@@ -27,4 +27,5 @@
 
 pub mod cli;
 pub mod config;
+pub mod spec;
 pub mod version;
