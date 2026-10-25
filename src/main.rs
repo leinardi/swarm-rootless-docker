@@ -22,29 +22,37 @@
  * SOFTWARE.
  */
 
-//! The swarm-rootless-docker binary. A placeholder until the launcher lands: it reports its
-//! version and refuses everything else.
-
-mod version;
+//! The swarm-rootless-docker binary: parses the command line and runs the chosen mode.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-/// Usage error: no or an unknown subcommand.
+use swarm_rootless_docker::cli::{Cli, Command};
+use swarm_rootless_docker::config::LaunchConfig;
+
+/// Exit code of a launcher error.
+const EXIT_FAILURE: u8 = 1;
+/// Exit code of a usage or configuration error (clap uses the same for its own).
 const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
-    let first = std::env::args_os().nth(1);
-    if first.as_deref() == Some("--version".as_ref()) {
-        let _ = writeln!(
-            io::stdout(),
-            "swarm-rootless-docker {} ({}, {})",
-            version::VERSION,
-            version::COMMIT,
-            version::DATE
-        );
-        return ExitCode::SUCCESS;
+    let cli = Cli::parse_args();
+    match cli.command {
+        Command::Launch(args) => match LaunchConfig::new(args.into_values()) {
+            Ok(_config) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "swarm-rootless-docker: launch: the launcher is not implemented yet"
+                );
+                ExitCode::from(EXIT_FAILURE)
+            }
+            Err(config_error) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "swarm-rootless-docker: invalid configuration: {config_error}"
+                );
+                ExitCode::from(EXIT_USAGE)
+            }
+        },
     }
-    let _ = writeln!(io::stderr(), "usage: swarm-rootless-docker --version");
-    ExitCode::from(EXIT_USAGE)
 }
