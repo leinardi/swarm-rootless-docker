@@ -1,0 +1,36 @@
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IntelliJ IDEA / JetBrains
+.idea/*
+!.idea/codeStyles/
+!.idea/copyright/
+*.iml
+out/
+.gradle/
+
+# Other editors
+.vscode/
+*.code-workspace
+*.swp
+*~
+
+# Logs
+*.log
+
+# Local tooling / sandbox
+.env
+.env.*
+.venv/
+venv/
+.cache/
+.tmp/
+tmp/
+
+# Claude Code: the shared settings and the skills symlink are tracked; local settings
+# (settings.local.json) and session state never are.
+.claude/*
+!.claude/settings.json
+!.claude/skills
