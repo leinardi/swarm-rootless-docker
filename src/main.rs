@@ -25,11 +25,13 @@
 //! The swarm-rootless-docker binary: parses the command line and runs the chosen mode.
 
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use swarm_rootless_docker::cli::{Cli, Command};
 use swarm_rootless_docker::config::LaunchConfig;
 use swarm_rootless_docker::probe::{self, ProbeReport};
+use swarm_rootless_docker::{daemon, status};
 
 /// Exit code of a launcher error.
 const EXIT_FAILURE: u8 = 1;
@@ -56,6 +58,27 @@ fn main() -> ExitCode {
             }
         },
         Command::Probe { request } => probe(&request),
+        Command::Daemon => {
+            let error = daemon::run();
+            let _ = writeln!(io::stderr(), "swarm-rootless-docker: daemon: {error}");
+            ExitCode::from(EXIT_FAILURE)
+        }
+        Command::DaemonHealth => report_health(daemon::health().map_err(|error| error.to_string())),
+        Command::Healthcheck => report_health(status::query(
+            Path::new(status::STATUS_SOCKET),
+            status::QUERY_TIMEOUT,
+        )),
+    }
+}
+
+/// A healthcheck's result: exit 0, or the reason on stderr and exit 1.
+fn report_health(result: Result<(), String>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(reason) => {
+            let _ = writeln!(io::stderr(), "swarm-rootless-docker: unhealthy: {reason}");
+            ExitCode::from(EXIT_FAILURE)
+        }
     }
 }
 

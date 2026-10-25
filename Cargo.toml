@@ -49,17 +49,17 @@ workspace = true
 [dependencies]
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "string"] }
-rustix = { version = "1.1.5", default-features = false, features = ["std", "fs"] }
+rustix = { version = "1.1.5", default-features = false, features = ["std", "fs", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros"] }
+tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "net", "io-util"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 base64 = "0.23.1"
-tokio = { version = "1.54.1", default-features = false, features = ["test-util", "net", "io-util"] }
+tokio = { version = "1.54.1", default-features = false, features = ["test-util", "net", "io-util", "rt-multi-thread"] }
 
 [profile.release]
 lto = true

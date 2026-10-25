@@ -74,6 +74,15 @@ pub enum Command {
         /// The request, as JSON.
         request: String,
     },
+    /// Start the rootless dockerd, in the daemon container (internal: takes no argument).
+    #[command(hide = true)]
+    Daemon,
+    /// The daemon container's healthcheck: ping dockerd (internal).
+    #[command(hide = true)]
+    DaemonHealth,
+    /// The launcher container's healthcheck: ask the launcher (the image's `HEALTHCHECK`).
+    #[command(hide = true)]
+    Healthcheck,
 }
 
 /// The flags of `launch`: what differs between consumers, and nothing about the daemon's
@@ -196,6 +205,34 @@ mod tests {
         assert!(args.subgid.is_none() && args.cpus.is_none() && args.mounts.is_empty());
     }
 
+    /// The subcommands the container specs run are the ones this binary has, and take no argument.
+    #[test]
+    fn spec_commands_exist() {
+        use crate::spec::{DAEMON_COMMAND, DAEMON_HEALTH_COMMAND};
+        let parse = |argv: &[&str]| {
+            let matches = command().try_get_matches_from(argv)?;
+            Cli::from_arg_matches(&matches)
+        };
+        let cli = parse(&["swarm-rootless-docker", DAEMON_COMMAND]).unwrap();
+        assert!(matches!(cli.command, Command::Daemon));
+        let cli = parse(&["swarm-rootless-docker", DAEMON_HEALTH_COMMAND]).unwrap();
+        assert!(matches!(cli.command, Command::DaemonHealth));
+        let cli = parse(&["swarm-rootless-docker", "healthcheck"]).unwrap();
+        assert!(matches!(cli.command, Command::Healthcheck));
+        for argv in [
+            &["swarm-rootless-docker", DAEMON_COMMAND, "--debug"][..],
+            &[
+                "swarm-rootless-docker",
+                DAEMON_COMMAND,
+                "-H",
+                "tcp://0.0.0.0:2375",
+            ],
+            &["swarm-rootless-docker", DAEMON_HEALTH_COMMAND, "x"],
+        ] {
+            assert!(parse(argv).is_err(), "{argv:?}");
+        }
+    }
+
     /// `probe` takes exactly one argument and stays out of the help: it is the launcher's.
     #[test]
     fn probe_is_internal() {
@@ -209,7 +246,9 @@ mod tests {
             assert!(command().try_get_matches_from(argv).is_err(), "{extra:?}");
         }
         let help = command().render_help().to_string();
-        assert!(!help.contains("probe"), "{help}");
+        for internal in ["probe", "daemon", "daemon-health", "healthcheck"] {
+            assert!(!help.contains(&format!("\n  {internal} ")), "{help}");
+        }
     }
 
     #[test]
