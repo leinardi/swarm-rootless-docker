@@ -40,10 +40,22 @@ cargo test --locked -p meta --test docs
 
 The Makefile pulls shared snippets from `leinardi/make-common@v1` into `.mk/` on first run. To
 refresh: `make mk-common-update`. Project targets live in the local `.mk/*.mk` files listed in
-`MK_LOCAL_FILES` (`rust.mk`, `verify.mk`, `audit-deps.mk`), never as recipes in the Makefile.
+`MK_LOCAL_FILES` (`rust.mk`, `verify.mk`, `audit-deps.mk`, `image.mk`), never as recipes in the
+Makefile.
 
-In CI, `ci-result` is the one required check: it needs `pre-commit-all`, `conventional-commits`
-and `rust` (`ci.yaml`); the reviewdog jobs only annotate pull requests.
+The image and its integration tests:
+
+```bash
+make image-build            # the 568 variant (ROOTLESS_UID/ROOTLESS_GID); needs a dhi.io login
+make image-build-prebuilt   # the same from a binary built here, without dhi.io (fork CI)
+make image-test             # the built image without a daemon: user, files, labels, entrypoint
+make integration-test       # tests/integration.rs on this Docker; needs the AppArmor sysctl at 0
+```
+
+In CI, `ci-result` is the one required check: it needs `pre-commit-all`, `conventional-commits`,
+`rust` and `image` (`ci.yaml`); the reviewdog jobs only annotate pull requests. `image` builds with
+the dhi.io login when the secret is there, and through `image-build-prebuilt` when it is not (a
+fork's pull request).
 
 ## Layout
 

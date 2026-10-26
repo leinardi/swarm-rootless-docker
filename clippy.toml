@@ -4,4 +4,4 @@ allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 
 # Proper names in doc comments, beside clippy's defaults ("..").
-doc-valid-idents = ["NFSv4", "TrueNAS", ".."]
+doc-valid-idents = ["AppArmor", "NFSv4", "TrueNAS", ".."]
