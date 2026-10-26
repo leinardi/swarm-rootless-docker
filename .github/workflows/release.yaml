@@ -111,7 +111,8 @@ jobs:
   plan:
     needs: guard
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # A dispatch waits up to 30 minutes for CI to finish on the commit it releases.
+    timeout-minutes: 45
     permissions:
       contents: read
       checks: read # ci-result of the commit to release

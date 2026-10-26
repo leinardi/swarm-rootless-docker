@@ -26,10 +26,12 @@
 # Tests for release-plan.sh, against scratch git repositories. Plain bash: stub gh, docker and svu
 # commands, first on PATH, answer from files in the scratch directory:
 #
-#   ci        "<sha> green|red|pending|missing|foreign|error", the ci-result check runs of a commit
+#   ci        "<sha> <state>[,<state>...]", the ci-result check runs of a commit, one state per
+#             lookup (the last repeats), each green, red, pending, missing, foreign or error
 #   releases  "<tag> published|draft|error", the GitHub releases (a tag with no line has none)
 #   images    "<reference> <value>": for an upstream reference its index digest, for a published
-#             version its base digest label, or "error" (a reference with no line is not found)
+#             version its base digest label, "error", or "config-error" (the index reads, its
+#             config does not); a reference with no line is not found
 #   svu_next  what svu next prints (no file: the version it counts from, so nothing to bump)
 #
 # Run: bash .github/scripts/release-plan.test.sh
@@ -65,7 +67,13 @@ api)
 	sha="$(sed -E 's#^repos/[^/]+/[^/]+/commits/([0-9a-f]+)/check-runs\?check_name=ci-result&filter=latest&per_page=100$#\1#' <<<"$2")"
 	[[ "${sha}" != "$2" ]] || { echo "stub gh: unexpected api call $2" >&2; exit 99; }
 	run() { printf '{"status":"%s","conclusion":%s,"app":{"slug":"%s"}}' "$1" "$2" "$3"; }
-	case "$(lookup ci "${sha}" || echo missing)" in
+	states="$(lookup ci "${sha}" || echo missing)"
+	calls="${STUB_DIR}/ci-calls-${sha}"
+	count=$(($(cat "${calls}" 2>/dev/null || echo 0) + 1))
+	echo "${count}" >"${calls}"
+	IFS=, read -r -a sequence <<<"${states}"
+	index=$((count <= ${#sequence[@]} ? count - 1 : ${#sequence[@]} - 1))
+	case "${sequence[${index}]}" in
 	green) runs="$(run completed '"success"' github-actions),$(run completed '"success"' github-actions)" ;;
 	red) runs="$(run completed '"success"' github-actions),$(run completed '"failure"' github-actions)" ;;
 	pending) runs="$(run in_progress null github-actions)" ;;
@@ -96,6 +104,10 @@ value="$(awk -v key="$4" '$1 == key { print $2 }' "${STUB_DIR}/images" 2>/dev/nu
 case "${value}" in
 "") echo "ERROR: $4: not found" >&2; exit 1 ;;
 error) echo "ERROR: failed to authorize: 403 Forbidden" >&2; exit 1 ;;
+config-error)
+	[[ "$6" == '{{json .Manifest}}' ]] || { echo "ERROR: failed to read the config" >&2; exit 1; }
+	value="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+	;;
 *) ;;
 esac
 case "$6" in
@@ -150,6 +162,8 @@ tag() {
 }
 
 ci() {
+	sed -i "/^$1 /d" "${STUB_DIR}/ci"
+	rm -f "${STUB_DIR}/ci-calls-$1"
 	echo "$1 $2" >>"${STUB_DIR}/ci"
 }
 
@@ -173,6 +187,7 @@ run_plan() {
 		EVENT="$1" VERSION_INPUT="${2:-}" REPOSITORY=leinardi/example IMAGE_REPO="${image_repo}" \
 		IMAGE_VARIANTS="${VARIANTS:-568:568}" RELEASE_TAG_REGEX='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
 		GITHUB_OUTPUT="${out_file}" GITHUB_STEP_SUMMARY="${STUB_DIR}/summary" \
+		CI_WAIT_SECONDS="${WAIT:-0}" CI_POLL_SECONDS=0.05 \
 		bash "${script}" plan 2>&1)" || status=$?
 	out="$(cat "${out_file}")"
 }
@@ -326,6 +341,28 @@ ci "${head}" pending
 run_plan workflow_dispatch
 expect_refusal "dispatch: a pending ci-result says CI is still running" "CI is still running on it"
 
+# A dispatch waits for CI that is still running, and fails only on red; a schedule does not wait.
+ci "${head}" missing,pending,pending,green
+WAIT=10 run_plan workflow_dispatch
+expect_plan "dispatch: waits for CI to finish green" mode=head sha="${head}" version=v0.1.1 previous=v0.1.0 \
+	major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+ci "${head}" missing,pending,red
+WAIT=10 run_plan workflow_dispatch
+expect_refusal "dispatch: CI finishing red fails" "ci-result is red on HEAD"
+if grep -qF "after waiting" <<<"${err}"; then
+	fail "dispatch: a red ci-result is not a timeout: ${err}"
+fi
+ci "${head}" pending
+WAIT=1 run_plan workflow_dispatch
+expect_refusal "dispatch: CI still running when the wait ends fails" "CI is still running on it after waiting 1 s"
+ci "${head}" missing,green
+WAIT=10 run_plan workflow_dispatch 0.2.0
+expect_plan "dispatch: an explicit version waits for CI too" mode=head sha="${head}" version=v0.2.0 \
+	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+ci "${head}" pending,green
+WAIT=10 run_plan schedule
+expect_plan "schedule: does not wait for CI" mode=none
+
 sed -i "/^${head} /d" "${STUB_DIR}/ci"
 ci "${head}" error
 run_plan schedule
@@ -469,6 +506,9 @@ echo "${image_repo}:v0.1.0-uid1000 ${d29b}" >>"${STUB_DIR}/images"
 VARIANTS="568:568 1000:1000" run_plan schedule
 expect_refusal "schedule: variants on different bases are refused" "record the bases '${d29a} ${d29b}'"
 sed -i "/-uid1000 /d" "${STUB_DIR}/images"
+sed -i "s#^${image_repo}:v0.1.0-uid568 .*#${image_repo}:v0.1.0-uid568 config-error#" "${STUB_DIR}/images"
+run_plan schedule
+expect_refusal "schedule: a recorded base that cannot be read stops the run" "could not inspect ${image_repo}:v0.1.0-uid568"
 sed -i "s#^${image_repo}:v0.1.0-uid568 .*#${image_repo}:v0.1.0-uid568 unpinned#" "${STUB_DIR}/images"
 run_plan schedule
 expect_refusal "schedule: a recorded base that is not a digest is refused" "record the bases 'unpinned'"

@@ -14,7 +14,10 @@ there".
    its GitHub release is missing or still a draft). The run finishes it from the tag's own commit,
    on the base its published images record.
 2. **head:** releasable commits since the last tag, and `ci-result` green on that exact HEAD
-   commit. The version is `svu next` (see the commit rules in [AGENTS.md](../AGENTS.md)).
+   commit. The version is `svu next` (see the commit rules in [AGENTS.md](../AGENTS.md)). A
+   dispatch waits up to 30 minutes for CI that is still running on the commit (one dispatched
+   right after a merge always finds it so) and fails only when CI fails, or has not finished by
+   then; a schedule does not wait, and tries again the next day.
 3. **base** (schedule only): the latest release's own commit again, as the next patch version,
    when upstream now serves a different digest of the `docker:<major>-dind-rootless` that commit's
    Dockerfile names than the one its images were built on. This is how upstream's fixes ship:
@@ -74,7 +77,7 @@ rebuild.
 
 ## First release
 
-1. Dispatch with `version` `0.1.0` and `dry_run` on, once `ci-result` is green on `main`.
+1. Dispatch with `version` `0.1.0` and `dry_run` on.
 2. Dispatch again with `dry_run` off.
 3. Make the GHCR package public (or give the nodes a pull credential): a new package may start
    private.
