@@ -90,7 +90,7 @@ pub enum Command {
 /// security profile, which is fixed.
 #[derive(Debug, Args)]
 pub struct LaunchArgs {
-    /// Instance name; the daemon container is swarm-rootless-docker-NAME.
+    /// Instance name; the daemon container is swarm-rootless-docker-daemon-NAME.
     #[arg(long, value_name = "NAME", value_parser = InstanceName::parse)]
     pub instance: InstanceName,
     /// Subordinate UID range of the daemon, START:COUNT.
