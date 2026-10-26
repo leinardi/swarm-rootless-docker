@@ -29,7 +29,8 @@
 #       Appends mode, sha, version, previous, major, base_ref and base_digest to $GITHUB_OUTPUT.
 #       The modes:
 #         head     a new version from HEAD: releasable commits since the last tag (or an explicit
-#                  version), and ci-result green on HEAD.
+#                  version), and ci-result green on HEAD. A dispatch waits for a ci-result that is
+#                  still missing or running (a dispatch right after a merge); a schedule does not.
 #         base     the latest release's own commit again, as the next patch version, because the
 #                  upstream base it was built on has a new digest (schedule only).
 #         recover  a version whose tag exists, again from its own commit and on the base its
@@ -42,15 +43,22 @@
 #
 # Environment: EVENT (schedule or workflow_dispatch), VERSION_INPUT (the dispatch's version, may be
 # empty), REPOSITORY (owner/name), IMAGE_REPO, IMAGE_VARIANTS (UID:GID pairs, space-separated),
-# RELEASE_TAG_REGEX, GITHUB_OUTPUT, and optionally GITHUB_STEP_SUMMARY and SVU (the svu command).
+# RELEASE_TAG_REGEX, GITHUB_OUTPUT, and optionally GITHUB_STEP_SUMMARY, SVU (the svu command),
+# CI_WAIT_SECONDS (how long a dispatch waits for CI, default 1800) and CI_POLL_SECONDS (how often
+# it looks, default 30).
 #
 # Every lookup fails closed: only a definite "not found" counts as absent, and any other error
 # stops the run, so an outage never reads as "nothing to release" or as "not released yet".
 
 set -euo pipefail
+# A failure inside a command substitution stops it, as at the top level: without this, bash runs
+# $(...) with errexit off, and a lookup that failed inside a helper would read as an empty answer.
+shopt -s inherit_errexit
 
 DOCKERFILE=deployments/docker/Dockerfile
 SVU="${SVU:-svu}"
+CI_WAIT_SECONDS="${CI_WAIT_SECONDS:-1800}"
+CI_POLL_SECONDS="${CI_POLL_SECONDS:-30}"
 
 die() {
 	echo "release-plan: $*" >&2
@@ -162,11 +170,43 @@ state_note() {
 	esac
 }
 
+# ci-result for commit $1 once CI has finished with it. A dispatch waits while it is missing or
+# pending, up to CI_WAIT_SECONDS: one dispatched right after a merge finds CI still running on the
+# merge commit. A schedule reads it once and tries again the next day. Only green or red ends the
+# wait early; when it runs out, the last state is the answer.
+settled_ci_state() {
+	local state deadline=$((SECONDS + CI_WAIT_SECONDS))
+	while :; do
+		state="$(ci_state "$1")" || exit 1
+		case "${state}" in
+		missing | pending) ;;
+		*)
+			echo "${state}"
+			return
+			;;
+		esac
+		if [[ "${EVENT}" != workflow_dispatch ]] || ((SECONDS >= deadline)); then
+			echo "${state}"
+			return
+		fi
+		note "ci-result is ${state} on $1: waiting for CI to finish"
+		sleep "${CI_POLL_SECONDS}"
+	done
+}
+
+# Why a state that is not green stops a dispatch.
+refusal() {
+	local waited=""
+	if [[ "${EVENT}" == workflow_dispatch && "$2" != red ]]; then
+		waited=" after waiting ${CI_WAIT_SECONDS} s"
+	fi
+	echo "ci-result is $2 on $1$(state_note "$2")${waited}; a release needs it green on that exact commit"
+}
+
 require_green() {
 	local state
-	state="$(ci_state "$1")"
-	[[ "${state}" == green ]] ||
-		die "ci-result is ${state} on $1 ($2)$(state_note "${state}"); a release needs it green on that exact commit"
+	state="$(settled_ci_state "$1")"
+	[[ "${state}" == green ]] || die "$(refusal "$1 ($2)" "${state}")"
 }
 
 # imagetools inspect of $1 with the format $2. Prints the JSON; returns 1 for a reference that
@@ -291,6 +331,8 @@ recover() {
 plan() {
 	require_env EVENT REPOSITORY IMAGE_REPO IMAGE_VARIANTS RELEASE_TAG_REGEX GITHUB_OUTPUT
 	variant_uids >/dev/null
+	[[ "${CI_WAIT_SECONDS}" =~ ^[0-9]+$ && "${CI_POLL_SECONDS}" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
+		die "CI_WAIT_SECONDS must be whole seconds and CI_POLL_SECONDS seconds"
 	case "${EVENT}" in
 	schedule | workflow_dispatch) ;;
 	*) die "EVENT must be schedule or workflow_dispatch, got '${EVENT}'" ;;
@@ -339,12 +381,11 @@ plan() {
 	[[ "${next}" =~ ${RELEASE_TAG_REGEX} ]] || die "svu derived '${next}' from ${current}, which is not a vX.Y.Z tag"
 	if [[ "${next}" != "${current}" ]]; then
 		higher "${next}" "${current}" || die "svu derived ${next}, which is not higher than ${current}"
-		state="$(ci_state "${head}")"
+		state="$(settled_ci_state "${head}")"
 		if [[ "${state}" == green ]]; then
 			emit head "${head}" "${next}" "${current}"
 		fi
-		[[ "${EVENT}" == schedule ]] ||
-			die "ci-result is ${state} on HEAD (${head})$(state_note "${state}"); a release needs it green on that exact commit"
+		[[ "${EVENT}" == schedule ]] || die "$(refusal "HEAD (${head})" "${state}")"
 		warn "Commits since ${current} would release ${next}, but ci-result is ${state} on HEAD (${head}). They wait for a green run; only a base rebuild of ${current} was considered."
 	elif [[ "${EVENT}" == workflow_dispatch ]]; then
 		die "no feat/fix or breaking-change commit since ${current}, so there is nothing to bump; dispatch an explicit version to force one"
