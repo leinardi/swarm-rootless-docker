@@ -310,10 +310,16 @@ jobs:
       - name: Check the image
         run: make image-test
 
-      # SRD_IT_REQUIRE=1: a test that did not run fails instead of passing.
+      # The Swarm test deploys into the node's swarm: this throwaway runner gets its own.
+      - name: Initialise a single-node swarm
+        run: docker swarm init
+
+      # SRD_IT_REQUIRE=1: a test that did not run fails instead of passing. SRD_IT_SWARM=1 turns
+      # on the Swarm test, which is off on a developer's machine.
       - name: Run the integration tests
         env:
           SRD_IT_REQUIRE: "1"
+          SRD_IT_SWARM: "1"
         run: make integration-test
 
   # The single required check: green only when every gating job succeeded. conventional-commits
