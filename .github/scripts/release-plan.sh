@@ -153,10 +153,20 @@ ci_state() {
 	' <<<"${response}" || die "could not parse ci-result for $1"
 }
 
+# What a ci-result state means for a release that waits on it.
+state_note() {
+	case "$1" in
+	missing) echo "; no ci-result run exists for it yet, so CI may still be running on it" ;;
+	pending) echo "; CI is still running on it" ;;
+	*) ;;
+	esac
+}
+
 require_green() {
 	local state
 	state="$(ci_state "$1")"
-	[[ "${state}" == green ]] || die "ci-result is ${state} on $1 ($2); a release needs it green on that exact commit"
+	[[ "${state}" == green ]] ||
+		die "ci-result is ${state} on $1 ($2)$(state_note "${state}"); a release needs it green on that exact commit"
 }
 
 # imagetools inspect of $1 with the format $2. Prints the JSON; returns 1 for a reference that
@@ -333,7 +343,8 @@ plan() {
 		if [[ "${state}" == green ]]; then
 			emit head "${head}" "${next}" "${current}"
 		fi
-		[[ "${EVENT}" == schedule ]] || die "ci-result is ${state} on HEAD (${head}); a release needs it green on that exact commit"
+		[[ "${EVENT}" == schedule ]] ||
+			die "ci-result is ${state} on HEAD (${head})$(state_note "${state}"); a release needs it green on that exact commit"
 		warn "Commits since ${current} would release ${next}, but ci-result is ${state} on HEAD (${head}). They wait for a green run; only a base rebuild of ${current} was considered."
 	elif [[ "${EVENT}" == workflow_dispatch ]]; then
 		die "no feat/fix or breaking-change commit since ${current}, so there is nothing to bump; dispatch an explicit version to force one"
