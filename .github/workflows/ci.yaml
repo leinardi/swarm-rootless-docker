@@ -216,6 +216,22 @@ jobs:
           from-ref: ${{ github.event.pull_request.base.sha }}
           to-ref: ${{ github.event.pull_request.head.sha }}
 
+  # The release workflow's scripts, against scratch repositories and stub gh, docker, svu and trivy
+  # commands: release.yaml runs them, and a mistake there would only show in a release.
+  release-scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test release-plan.sh
+        run: bash .github/scripts/release-plan.test.sh
+
+      - name: Test scan-findings.sh
+        run: bash .github/scripts/scan-findings.test.sh
+
   # The Rust workspace: the same workspace-wide commands as make verify-rust and the pre-commit
   # hooks, plus cargo-deny (advisories, licences, bans and sources; the advisory database needs the
   # network). The toolchain matches rust-toolchain.toml. The tests include the meta crate's; with
@@ -312,7 +328,7 @@ jobs:
 
       # The Swarm test deploys into the node's swarm: this throwaway runner gets its own.
       - name: Initialise a single-node swarm
-        run: docker swarm init
+        run: docker swarm init > /dev/null
 
       # SRD_IT_REQUIRE=1: a test that did not run fails instead of passing. SRD_IT_SWARM=1 turns
       # on the Swarm test, which is off on a developer's machine.
@@ -329,6 +345,7 @@ jobs:
     needs:
       - pre-commit-all
       - conventional-commits
+      - release-scripts
       - rust
       - image
     runs-on: ubuntu-latest
