@@ -673,32 +673,56 @@ fn real_host_reads_what_the_kernel_says() {
     }
     // On ZFS with nfs4acl (TrueNAS) every new directory carries the ACL: then it must be one the
     // probe accepts.
-    if let Some(bytes) = host.xattr(&dir, nfs4::XATTR).unwrap() {
-        let acl = nfs4::decode(&bytes).unwrap();
+    let nfs4_acl = host.xattr(&dir, nfs4::XATTR).unwrap();
+    if let Some(bytes) = &nfs4_acl {
+        let acl = nfs4::decode(bytes).unwrap();
         nfs4::check_trivial(&acl, meta.mode).unwrap();
     }
     assert_eq!(host.read(&scratch.path("missing")).unwrap(), None);
     assert_eq!(host.read(&file).unwrap().as_deref(), Some("x"));
 
+    // A missing setfacl is a missing tool, which REQUIRE_TOOLS fails on; a filesystem that
+    // rejects POSIX ACLs (ZFS with nfs4acl, whose directories carry the NFSv4 ACL instead) is not,
+    // and only skips the step.
+    let require =
+        std::env::var_os("SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS").is_some_and(|value| value == "1");
+    let note = |message: &str| {
+        let mut stderr = io::stderr();
+        let _ = std::io::Write::write_all(&mut stderr, format!("note: {message}\n").as_bytes());
+    };
     let setfacl = Command::new("setfacl")
         .args(["-m", "u:12345:rwx", &dir])
-        .status();
+        .env("LC_ALL", "C")
+        .output();
     match setfacl {
-        Ok(status) if status.success() => {
+        Ok(output) if output.status.success() => {
             assert!(host.xattr(&dir, POSIX_ACL_XATTRS[0]).unwrap().is_some());
             // Never the symlink's target: the link itself has no ACL.
             assert_eq!(host.xattr(&link, POSIX_ACL_XATTRS[0]).unwrap(), None);
         }
-        Ok(_) | Err(_) => {
-            assert!(
-                std::env::var_os("SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS").is_none(),
-                "setfacl is required"
-            );
-            let mut stderr = io::stderr();
-            let _ = std::io::Write::write_all(
-                &mut stderr,
-                b"note: setfacl unavailable, POSIX ACL check skipped\n",
-            );
+        Ok(output)
+            if nfs4_acl.is_some()
+                || String::from_utf8_lossy(&output.stderr).contains("Operation not supported") =>
+        {
+            note("the scratch filesystem rejects POSIX ACLs, POSIX ACL check skipped");
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            assert!(!require, "setfacl is required");
+            note("setfacl unavailable, POSIX ACL check skipped");
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!require, "setfacl failed: {}: {stderr}", output.status);
+            note(&format!(
+                "setfacl failed ({}), POSIX ACL check skipped",
+                output.status
+            ));
+        }
+        Err(error) => {
+            assert!(!require, "setfacl could not run: {error}");
+            note(&format!(
+                "setfacl could not run ({error}), POSIX ACL check skipped"
+            ));
         }
     }
 }
