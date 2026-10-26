@@ -34,6 +34,11 @@ const SCHEDULED_SCAN: &str = ".github/workflows/scheduled-scan.yaml";
 const CI: &str = ".github/workflows/ci.yaml";
 const SCRIPTS: &str = ".github/scripts";
 const HARNESS: &str = "tests/integration/harness.rs";
+const DOCKERFILE: &str = "deployments/docker/Dockerfile";
+
+/// The files a consumer copies the base and the tag from: they must name the Dockerfile's major,
+/// and only it, so the pull request that moves the Dockerfile to the next major updates them too.
+const NAME_THE_MAJOR: &[&str] = &["README.md", "deployments/docker/docker-compose.yaml"];
 
 /// The files that derive the Docker major from the Dockerfile of the commit they handle, and so
 /// must never name one: a literal would be wrong the day the Dockerfile moves to the next major,
@@ -125,6 +130,63 @@ fn docker_major_patterns_are_recognized() {
     ] {
         assert!(major_hits(sample).is_empty(), "{sample:?} is found");
     }
+}
+
+/// The Docker majors `content` names, as a base reference or as a floating tag.
+fn named_majors(content: &str) -> Vec<String> {
+    let patterns = [
+        re(r"docker:(\d+)-dind-rootless"),
+        re(r"(?:^|[^\w.$])(\d+)-uid\d"),
+    ];
+    content
+        .lines()
+        .flat_map(|line| {
+            patterns
+                .iter()
+                .flat_map(move |pattern| pattern.captures_iter(line))
+                .map(|captures| captures[1].to_owned())
+        })
+        .collect()
+}
+
+/// The README and the Compose example name the Docker major of the Dockerfile's runtime stage,
+/// and no other.
+#[test]
+fn docs_name_the_dockerfile_major() {
+    let dockerfile = repo::read(DOCKERFILE);
+    let major = re(r"(?m)^FROM docker:(\d+)-dind-rootless AS runtime$")
+        .captures(&dockerfile)
+        .map_or_else(
+            || panic!("{DOCKERFILE} has no FROM docker:<major>-dind-rootless AS runtime"),
+            |captures| captures[1].to_owned(),
+        );
+    let mut problems = Vec::new();
+    for file in NAME_THE_MAJOR {
+        let named = named_majors(&repo::read(file));
+        if !named.contains(&major) {
+            problems.push(format!("{file} does not name Docker {major}"));
+        }
+        for other in named.iter().filter(|named| **named != major) {
+            problems.push(format!(
+                "{file} names Docker {other}, not the Dockerfile's {major}"
+            ));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The negative control of the major lookup: both spellings are found, versions and placeholders
+/// are not.
+#[test]
+fn named_majors_are_recognized() {
+    assert_eq!(
+        named_majors("FROM docker:29-dind-rootless AS runtime, then :30-uid568 and 31-uid1000"),
+        ["29", "30", "31"]
+    );
+    assert!(
+        named_majors("v0.1.0-uid568 <major>-uid<UID> $MAJOR-uid1 docker:<major>-dind-rootless")
+            .is_empty()
+    );
 }
 
 /// The scheduled scan reads the images the release publishes, with its scanner: the same tags,

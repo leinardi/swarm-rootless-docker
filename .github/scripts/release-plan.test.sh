@@ -318,6 +318,15 @@ for state in red pending missing foreign; do
 done
 
 sed -i "/^${head} /d" "${STUB_DIR}/ci"
+ci "${head}" missing
+run_plan workflow_dispatch
+expect_refusal "dispatch: a missing ci-result says CI may still be running" "CI may still be running on it"
+sed -i "/^${head} /d" "${STUB_DIR}/ci"
+ci "${head}" pending
+run_plan workflow_dispatch
+expect_refusal "dispatch: a pending ci-result says CI is still running" "CI is still running on it"
+
+sed -i "/^${head} /d" "${STUB_DIR}/ci"
 ci "${head}" error
 run_plan schedule
 expect_refusal "schedule: an unreadable ci-result stops the run" "could not read ci-result"

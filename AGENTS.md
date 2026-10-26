@@ -9,9 +9,11 @@ and supervises the daemon container from its own image digest, so Swarm owns the
 updates and rollbacks reach the daemon. The daemon container always gets one fixed security profile
 (no `--privileged`, no added capabilities beyond `SETUID`/`SETGID`, no host namespaces).
 
-**State:** scaffolding. `src/main.rs` is a placeholder that only answers `--version`; the launcher,
-the image, the release workflow and the image tests land next. The approved design is the
-maintainer's plan; the README becomes the user-facing contract once the launcher ships.
+**State:** the launcher, the image, the integration tests and the release workflow are in place;
+the first release is next. [`README.md`](README.md) is the user-facing contract: keep it in step
+with what the code does. [`docs/architecture.md`](docs/architecture.md) explains the launcher's
+lifecycle and ownership rules, [`docs/release.md`](docs/release.md) the releases and their
+recovery, [`docs/testing.md`](docs/testing.md) the test layers.
 
 ## Common commands
 
@@ -75,15 +77,27 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 `deny.toml` configures cargo-deny, and the lint set is `[workspace.lints]` in the root
 `Cargo.toml`.
 
-- `src/main.rs` — the entry point (a placeholder for now); `src/version.rs` — the version strings.
+- `src/` — the one binary. `main.rs` runs the mode `cli.rs` parses: `launcher/` (the `launch` mode
+  and the probe run), `daemon/` (the `daemon` and `daemon-health` modes), `probe/` (the host-side
+  checks, NFSv4 ACL decoding included) and `status/` (the status socket the `healthcheck` mode
+  asks). Around them: `config/` (every flag as a validated type), `spec/` (each container the
+  launcher creates, from one function, and the labels), `node/` (the node lock and stale rules),
+  `docker/` (the Docker API behind a trait: bollard, and the recording fake for tests), `mounts/`
+  (where a host path lies, from `mountinfo`), `socket/`, `output.rs` (stdout and stderr off the
+  runtime), `logger.rs` and `version.rs`.
+- `tests/integration/` — the integration tests against the built image (`docs/testing.md`);
+  `testdata/nfs4/` — NFSv4 ACL fixtures captured on the target node.
+- `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
+  Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
   version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `docs.rs` (Markdown
-  links), `license_headers.rs` and `suppressions.rs` (the two scripts below), `release.rs` (no
-  Docker major outside the Dockerfile, the two image workflows agree, every release script tested
-  in CI), and `workspace_lints.rs` (every member opts into the workspace lints). `meta/src/` holds their
-  helpers: `repo` reads tracked files, `gitenv` isolates scratch-repository git commands, `toolgate`
-  finds external tools, `dockerfile` parses a Dockerfile (for the image tests to come) and `links`
-  checks Markdown.
+  links), `dockerfiles.rs` (the image's shape and labels), `license_headers.rs` and
+  `suppressions.rs` (the two scripts below), `release.rs` (no Docker major outside the Dockerfile,
+  the README and the Compose example name its major, the two image workflows agree, every release
+  script tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
+  `meta/src/` holds their helpers: `repo` reads tracked files, `gitenv` isolates
+  scratch-repository git commands, `toolgate` finds external tools, `dockerfile` parses a
+  Dockerfile and `links` checks Markdown.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
   floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
@@ -93,9 +107,9 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `.trivyignore.yaml` lists the scans' accepted findings. `.github/actions/setup-shellcheck`
   installs the pinned, sha256-checked ShellCheck that droast's required bridge runs.
 - `droast.toml` — the Dockerfile Roast policy (the seven required OCI labels, strict labels, a
-  required ShellCheck bridge); `.dclintrc` — the Compose lint rules. Both hooks find no files
-  until the Dockerfile and the Compose example land.
-- `scripts/` — `check-license-headers.sh`, `check-suppressions.sh`, `hooks/rustfmt-on-edit.sh` (the
+  required ShellCheck bridge); `.dclintrc` — the Compose lint rules.
+- `scripts/` — `image-test.sh` (`make image-test`), `check-license-headers.sh`,
+  `check-suppressions.sh`, `hooks/rustfmt-on-edit.sh` (the
   Claude Code edit hook in `.claude/settings.json`) and make-common's `bootstrap-mk-common.sh`.
 
 ### Generated or vendored: never hand-edit
@@ -119,6 +133,9 @@ Run before considering an edit done. `make check` applies to every row.
 | `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
+| `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build image-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
+| `tests/integration/**`, the launcher's behaviour | `make integration-test` (the AppArmor sysctl at 0 for the run, then back to 1; `docs/testing.md`) |
+| `deployments/docker/docker-compose.yaml` | `make check` (dclint); `docker stack config -c deployments/docker/docker-compose.yaml` with `DOCKER_GID` set; keep the README's deployment section in step |
 | `.github/workflows/**`, `.github/actions/**`, `.github/dependabot.yml` | `pre-commit run actionlint --all-files`, `cargo test --locked -p meta --test toolchain --test release`; reason through each trigger the workflow has (pull request, push, dispatch, schedule) and keep `ci-result`'s `needs` complete; for `release.yaml`, dispatch a dry run |
 | `.github/scripts/**` | `bash .github/scripts/<script>.test.sh` for each script changed, `cargo test --locked -p meta --test release` |
 | `.trivyignore.yaml` | every entry scoped to paths, with a statement and an `expired_at`; scan the image with `.github/scripts/scan-findings.sh` |
