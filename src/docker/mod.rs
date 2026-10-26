@@ -54,6 +54,10 @@ use crate::spec::ContainerSpec;
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Output pieces buffered between the engine and the launcher's own stdout and stderr.
 const OUTPUT_BUFFER: usize = 64;
+/// The name of Docker's default bridge network.
+const DEFAULT_BRIDGE: &str = "bridge";
+/// The option that marks the default bridge, whatever its name.
+const DEFAULT_BRIDGE_OPTION: &str = "com.docker.network.bridge.default_bridge";
 
 /// A failed Docker call. Only [`DockerError::NotFound`] and [`DockerError::Conflict`] are ever
 /// acted on; anything else says nothing about the container and refuses.
@@ -108,6 +112,15 @@ pub struct ImageInfo {
     pub labels: HashMap<String, String>,
 }
 
+/// A network from an inspect call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkInfo {
+    /// The full ID: the one identity of a network that can be named by name, ID or ID prefix.
+    pub id: String,
+    /// Whether it is Docker's default `bridge`, which has no container DNS.
+    pub default_bridge: bool,
+}
+
 /// A piece of a container's output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Output {
@@ -152,6 +165,12 @@ pub trait DockerApi: Sync {
         &self,
         id: &str,
     ) -> impl Future<Output = Result<ImageInfo, DockerError>> + Send;
+
+    /// Inspects a network by name, ID or ID prefix.
+    fn inspect_network(
+        &self,
+        name_or_id: &str,
+    ) -> impl Future<Output = Result<NetworkInfo, DockerError>> + Send;
 
     /// The engine's data root (`DockerRootDir`).
     fn docker_root(&self) -> impl Future<Output = Result<String, DockerError>> + Send;
@@ -298,6 +317,24 @@ impl DockerApi for Bollard {
                 .config
                 .and_then(|config| config.labels)
                 .unwrap_or_default(),
+        })
+    }
+
+    async fn inspect_network(&self, name_or_id: &str) -> Result<NetworkInfo, DockerError> {
+        let network = self
+            .bounded(self.client.inspect_network(name_or_id, None))
+            .await?;
+        let default_bridge = network.name.as_deref() == Some(DEFAULT_BRIDGE)
+            || network
+                .options
+                .as_ref()
+                .and_then(|options| options.get(DEFAULT_BRIDGE_OPTION))
+                .is_some_and(|value| value == "true");
+        Ok(NetworkInfo {
+            id: network
+                .id
+                .ok_or_else(|| missing("an inspected network's ID"))?,
+            default_bridge,
         })
     }
 

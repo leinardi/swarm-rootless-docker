@@ -36,7 +36,7 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use super::{
     ContainerInfo, ContainerSummary, DockerApi, DockerError, ExitWait, ImageInfo, MountInfo,
-    Output, OutputStream,
+    NetworkInfo, Output, OutputStream,
 };
 use crate::spec::ContainerSpec;
 
@@ -89,6 +89,7 @@ pub enum Call {
     Create(String),
     Remove(String),
     InspectImage(String),
+    InspectNetwork(String),
     DockerRoot,
     Upload(String),
     Attach(String),
@@ -105,6 +106,7 @@ pub enum Op {
     Create,
     Remove,
     InspectImage,
+    InspectNetwork,
     DockerRoot,
     Upload,
     Attach,
@@ -117,6 +119,8 @@ pub enum Op {
 struct State {
     containers: Vec<Container>,
     images: HashMap<String, HashMap<String, String>>,
+    /// `(name, network)`.
+    networks: Vec<(String, NetworkInfo)>,
     docker_root: String,
     scripts: Vec<(String, Script)>,
     outputs: HashMap<String, mpsc::Sender<Result<Output, DockerError>>>,
@@ -195,6 +199,17 @@ impl FakeDocker {
                 .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
                 .collect(),
         );
+    }
+
+    /// Adds a network.
+    pub fn add_network(&self, name: &str, id: &str, default_bridge: bool) {
+        self.state().networks.push((
+            name.to_owned(),
+            NetworkInfo {
+                id: id.to_owned(),
+                default_bridge,
+            },
+        ));
     }
 
     /// Sets the engine's data root.
@@ -425,6 +440,32 @@ impl DockerApi for FakeDocker {
             id: id.to_owned(),
             labels: labels.clone(),
         })
+    }
+
+    /// Resolves as Docker does: the full ID, then the name, then a unique ID prefix.
+    async fn inspect_network(&self, name_or_id: &str) -> Result<NetworkInfo, DockerError> {
+        tokio::task::yield_now().await;
+        let state = self.enter(
+            Call::InspectNetwork(name_or_id.to_owned()),
+            Op::InspectNetwork,
+            name_or_id,
+        )?;
+        let find = |matches: &dyn Fn(&(String, NetworkInfo)) -> bool| {
+            let found: Vec<&NetworkInfo> = state
+                .networks
+                .iter()
+                .filter(|network| matches(network))
+                .map(|(_, network)| network)
+                .collect();
+            match found.as_slice() {
+                [network] => Some((*network).clone()),
+                _ => None,
+            }
+        };
+        find(&|(_, network)| network.id == name_or_id)
+            .or_else(|| find(&|(name, _)| name == name_or_id))
+            .or_else(|| find(&|(_, network)| network.id.starts_with(name_or_id)))
+            .ok_or(DockerError::NotFound)
     }
 
     async fn docker_root(&self) -> Result<String, DockerError> {

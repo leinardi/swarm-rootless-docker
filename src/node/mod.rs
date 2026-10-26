@@ -28,7 +28,8 @@
 //! Under the lock, a launcher lists every daemon (in any state: one created but not yet started
 //! is exactly what the previous lock holder leaves), removes those whose owner is provably gone,
 //! checks its own configuration against the rest, creates its daemon and only then releases the
-//! lock. So no two daemons on a node ever hold overlapping ranges or host paths.
+//! lock. So no two daemons on a node ever hold overlapping ranges or host paths, nor the same
+//! alias on one network: this node's daemons only, the check cannot see another node's.
 //!
 //! A container is removed only when its owner is confirmed gone (not found, or found and not
 //! running) or is this very launcher; any doubt refuses and leaves it alone. Removal is by ID,
@@ -42,8 +43,8 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::config::LaunchConfig;
-use crate::docker::{ContainerSummary, DockerApi, DockerError};
+use crate::config::{LaunchConfig, NetworkName};
+use crate::docker::{ContainerSummary, DockerApi, DockerError, NetworkInfo};
 use crate::spec::{
     self, ContainerId, DaemonReservation, ImageIdentity, LABEL_LAUNCHER, LABEL_ROLE, LOCK_NAME,
     LabelError, ROLE_DAEMON, ROLE_LOCK, ROLE_PROBE, StorageIds,
@@ -84,6 +85,8 @@ pub enum NodeError {
         container: String,
         source: LabelError,
     },
+    #[error("--alias needs a user-defined network: --network {network} is the default bridge")]
+    AliasOnDefaultBridge { network: String },
     #[error("{what} conflicts with daemon {container} (instance {instance}): {detail}")]
     Conflict {
         what: &'static str,
@@ -98,6 +101,9 @@ pub enum NodeError {
 pub struct Reservation {
     pub container: String,
     pub held: DaemonReservation,
+    /// The full ID its network resolves to now. Resolved only when both this launcher and that
+    /// daemon have aliases; `None` also when the network is not on this node.
+    pub network_id: Option<String>,
 }
 
 /// The node lock, held: a created, never started container named [`LOCK_NAME`]. Container names
@@ -260,23 +266,64 @@ pub async fn survey(
                 owner: short(&owner),
             });
         }
+        let network_id = match &held.network {
+            Some(network) if !config.aliases().is_empty() && !held.aliases.is_empty() => {
+                resolve_network(docker, network)
+                    .await?
+                    .map(|resolved| resolved.id)
+            }
+            Some(_) | None => None,
+        };
         reservations.push(Reservation {
             container: daemon.id,
             held,
+            network_id,
         });
     }
     Ok(reservations)
 }
 
-/// Checks `config`, with the identities the probe found for its host paths, against every
-/// reservation: no overlapping subordinate range, and no host path that is the same as, inside or
-/// around one of theirs, by path or by physical location (so through a bind mount too).
+/// Under the lock, when `config` has aliases: the full ID of its `--network`, or `None` when the
+/// network is not on this node yet (an attachable overlay no container here has joined). Only
+/// aliases can make two daemons' names meet: container names, and so hostnames, differ by
+/// instance, under a prefix no alias may take. A name,
+/// an ID and an ID prefix of one network all resolve to the same ID.
+///
+/// # Errors
+///
+/// [`NodeError::AliasOnDefaultBridge`] when the network is the default bridge, however named; a
+/// Docker error other than not found.
+pub async fn resolve_alias_network(
+    docker: &impl DockerApi,
+    config: &LaunchConfig,
+) -> Result<Option<String>, NodeError> {
+    if config.aliases().is_empty() {
+        return Ok(None);
+    }
+    match resolve_network(docker, config.network()).await? {
+        Some(resolved) if resolved.default_bridge => Err(NodeError::AliasOnDefaultBridge {
+            network: config.network().to_string(),
+        }),
+        resolved => Ok(resolved.map(|resolved| resolved.id)),
+    }
+}
+
+/// Checks `config`, with the identities the probe found for its host paths and the ID of its
+/// network ([`resolve_alias_network`]), against every reservation: no overlapping subordinate
+/// range, no host path that is the same as, inside or around one of theirs, by path or by
+/// physical location (so through a bind mount too), and no DNS name of theirs on the same network
+/// ([`spec::dns_names`]: container name, which is also the hostname, and aliases).
+///
+/// Two networks count as different only when both resolved to different IDs: one that did not
+/// resolve may be the other. A daemon live on a network is attached to it on this node, so its
+/// network resolves, and so does the candidate's when it names the same one.
 ///
 /// # Errors
 ///
 /// [`NodeError::Conflict`] for the first overlap found.
 pub fn check_conflicts(
     config: &LaunchConfig,
+    network_id: Option<&str>,
     storage: &StorageIds,
     reservations: &[Reservation],
 ) -> Result<(), NodeError> {
@@ -320,8 +367,41 @@ pub fn check_conflicts(
                 }
             }
         }
+        let same_network = match (network_id, reservation.network_id.as_deref()) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            (Some(_) | None, None) | (None, Some(_)) => true,
+        };
+        let theirs = spec::dns_names(&held.instance, &held.aliases);
+        if let Some(name) = spec::dns_names(config.instance(), config.aliases())
+            .into_iter()
+            .find(|name| theirs.contains(name))
+            && same_network
+        {
+            let network = held
+                .network
+                .as_ref()
+                .map_or_else(String::new, ToString::to_string);
+            return Err(conflict(
+                "--alias",
+                format!("{name} is also one of its names on network {network}"),
+            ));
+        }
     }
     Ok(())
+}
+
+/// A network by name, ID or ID prefix; `None` when the engine does not know it.
+async fn resolve_network(
+    docker: &impl DockerApi,
+    network: &NetworkName,
+) -> Result<Option<NetworkInfo>, NodeError> {
+    match docker.inspect_network(network.as_str()).await {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(DockerError::NotFound) => Ok(None),
+        Err(error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout)) => {
+            Err(docker_error(&format!("inspect network {network}"), error))
+        }
+    }
 }
 
 /// Who owns a container, as far as removal is concerned.

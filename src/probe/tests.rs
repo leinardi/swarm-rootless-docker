@@ -193,6 +193,7 @@ fn config(mounts: &[&str]) -> LaunchConfig {
             .map(|mount| ExtraMount::parse(mount).unwrap())
             .collect(),
         network: NetworkName::parse("docker").unwrap(),
+        aliases: Vec::new(),
         memory: MemoryBytes::parse("1g").unwrap(),
         pids_limit: PidsLimit::parse("1024").unwrap(),
         cpus: None,

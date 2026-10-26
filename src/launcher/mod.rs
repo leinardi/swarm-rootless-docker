@@ -28,8 +28,8 @@
 //!
 //! 1. Identify the launcher's own container, its image and the host paths no daemon may touch
 //!    (the engine's data root and the host socket).
-//! 2. Under the node lock: survey the node, probe the host paths, check them against the other
-//!    daemons, create the daemon; then release the lock. The locked section is never cancelled:
+//! 2. Under the node lock: survey the node, resolve the network when there are aliases, probe the
+//!    host paths, check them and the aliases against the other daemons, create the daemon; then release the lock. The locked section is never cancelled:
 //!    a stop request is only looked at once the lock is released, and every step in it is
 //!    bounded.
 //! 3. Upload the daemon's `/etc/subuid` and `/etc/subgid`, attach its output to the launcher's
@@ -453,6 +453,7 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
         denied: &[AbsolutePath],
     ) -> Result<String, LaunchError> {
         let reservations = node::survey(self.docker, self.config, &self.launcher).await?;
+        let network_id = node::resolve_alias_network(self.docker, self.config).await?;
         let storage = probe::run(
             self.docker,
             self.config,
@@ -462,7 +463,7 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
             self.timing.probe,
         )
         .await?;
-        node::check_conflicts(self.config, &storage, &reservations)?;
+        node::check_conflicts(self.config, network_id.as_deref(), &storage, &reservations)?;
         let spec = spec::daemon_spec(self.config, image, &self.launcher, &storage)?;
         self.docker
             .create_container(&spec)

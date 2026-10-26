@@ -49,6 +49,10 @@ fn values() -> LaunchValues {
             ExtraMount::parse("/mnt/pool/docker/herdquay/cache:/cache:ro").unwrap(),
         ],
         network: NetworkName::parse("herdquay_docker").unwrap(),
+        aliases: vec![
+            NetworkAlias::parse("docker").unwrap(),
+            NetworkAlias::parse("dind").unwrap(),
+        ],
         memory: MemoryBytes::parse("8g").unwrap(),
         pids_limit: PidsLimit::parse("8192").unwrap(),
         cpus: Some(NanoCpus::parse("4").unwrap()),
@@ -63,6 +67,7 @@ fn minimal_config() -> LaunchConfig {
     LaunchConfig::new(LaunchValues {
         subgid: None,
         mounts: Vec::new(),
+        aliases: Vec::new(),
         cpus: None,
         ..values()
     })
@@ -194,8 +199,9 @@ fn fixed_tmpfs_json() -> [Value; 2] {
     ]
 }
 
-fn daemon_body(labels: &Value, host_config: &Value) -> Value {
-    json!({
+fn daemon_body(labels: &Value, host_config: &Value, networking: Option<Value>) -> Value {
+    let mut body = json!({
+        "Hostname": "swarm-rootless-docker-daemon-herdquay",
         "Image": IMAGE_ID,
         "Entrypoint": ["/usr/local/bin/swarm-rootless-docker"],
         "Cmd": ["daemon"],
@@ -211,7 +217,11 @@ fn daemon_body(labels: &Value, host_config: &Value) -> Value {
         "StopSignal": "SIGTERM",
         "StopTimeout": 15,
         "HostConfig": host_config
-    })
+    });
+    if let Some(networking) = networking {
+        body["NetworkingConfig"] = networking;
+    }
+    body
 }
 
 /// The whole daemon create request, field by field as it goes on the wire: anything added,
@@ -256,6 +266,8 @@ fn daemon_spec_is_pinned() {
             entry_json("/mnt/pool/docker/herdquay/workspace", 300),
             entry_json("/mnt/pool/docker/herdquay/cache", 301),
         ),
+        "io.github.leinardi.swarm-rootless-docker.network": "herdquay_docker",
+        "io.github.leinardi.swarm-rootless-docker.aliases": "docker,dind",
     });
     let host_config = daemon_host_config(
         &mounts,
@@ -266,11 +278,17 @@ fn daemon_spec_is_pinned() {
             ("NanoCpus", json!(4_000_000_000_i64)),
         ],
     );
-    assert_eq!(wire(&spec), daemon_body(&labels, &host_config));
+    let networking = json!({
+        "EndpointsConfig": {"herdquay_docker": {"Aliases": ["docker", "dind"]}}
+    });
+    assert_eq!(
+        wire(&spec),
+        daemon_body(&labels, &host_config, Some(networking))
+    );
 }
 
-/// Without mounts or `--cpus`: only the fixed mounts, no CPU limit, and `--subgid` defaults to
-/// `--subuid`.
+/// Without mounts, aliases or `--cpus`: only the fixed mounts, no `NetworkingConfig`, no CPU
+/// limit, and `--subgid` defaults to `--subuid`.
 #[test]
 fn daemon_spec_without_optional_flags_is_pinned() {
     let config = minimal_config();
@@ -302,6 +320,8 @@ fn daemon_spec_without_optional_flags_is_pinned() {
             entry_json("/mnt/pool/docker/herdquay-docker/data", 100),
             entry_json("/mnt/pool/docker/herdquay-docker/socket", 200),
         ),
+        "io.github.leinardi.swarm-rootless-docker.network": "herdquay_docker",
+        "io.github.leinardi.swarm-rootless-docker.aliases": "",
     });
     let host_config = daemon_host_config(
         &mounts,
@@ -311,7 +331,7 @@ fn daemon_spec_without_optional_flags_is_pinned() {
             ("PidsLimit", json!(8192)),
         ],
     );
-    assert_eq!(wire(&spec), daemon_body(&labels, &host_config));
+    assert_eq!(wire(&spec), daemon_body(&labels, &host_config, None));
 }
 
 /// A path is a JSON string in the storage label, so a quote or backslash in it cannot break the

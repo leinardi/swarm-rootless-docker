@@ -28,11 +28,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 use crate::config::{
-    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NetworkName, PidsLimit,
+    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NetworkAlias,
+    NetworkName, PidsLimit,
 };
 use crate::docker::fake::{Call, FakeDocker, Op, Status};
 use crate::mounts::{self, Device, Placement};
-use crate::spec::{FileId, HostLocation, LABEL_IMAGE_GID, LABEL_IMAGE_UID};
+use crate::spec::{
+    FileId, HostLocation, LABEL_ALIASES, LABEL_IMAGE_GID, LABEL_IMAGE_UID, LABEL_NETWORK,
+};
 
 const IMAGE_ID: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const NO_LABELS: [(&str, &str); 0] = [];
@@ -55,6 +58,7 @@ fn config(instance: &str, subuid: &str, root: &str) -> LaunchConfig {
         socket_dir: HostPath::parse(&format!("/mnt/{root}/socket")).unwrap(),
         mounts: vec![ExtraMount::parse(&format!("/mnt/{root}/work:/work")).unwrap()],
         network: NetworkName::parse("docker").unwrap(),
+        aliases: Vec::new(),
         memory: MemoryBytes::parse("1g").unwrap(),
         pids_limit: PidsLimit::parse("1024").unwrap(),
         cpus: None,
@@ -126,6 +130,7 @@ fn removed(docker: &FakeDocker) -> Vec<String> {
             | Call::Inspect(_)
             | Call::Create(_)
             | Call::InspectImage(_)
+            | Call::InspectNetwork(_)
             | Call::DockerRoot
             | Call::Upload(_)
             | Call::Attach(_)
@@ -316,10 +321,11 @@ fn conflicts() {
             &spec::daemon_labels(config, &other, &storage(config, base)).unwrap(),
         )
         .unwrap(),
+        network_id: None,
     };
     let reservations = [reserve(&runner(), 10)];
     let ok = |config: &LaunchConfig, base| {
-        check_conflicts(config, &storage(config, base), &reservations)
+        check_conflicts(config, None, &storage(config, base), &reservations)
     };
 
     ok(&herdquay(), 20).unwrap();
@@ -335,7 +341,7 @@ fn conflicts() {
         ..values_of(&herdquay())
     })
     .unwrap();
-    check_conflicts(&ours, &storage(&ours, 20), &[reserve(&theirs, 10)]).unwrap();
+    check_conflicts(&ours, None, &storage(&ours, 20), &[reserve(&theirs, 10)]).unwrap();
 
     let cases: [(&str, LaunchConfig, u64, &str); 6] = [
         (
@@ -415,6 +421,7 @@ fn conflict_through_a_bind_mount() {
             &spec::daemon_labels(&theirs, &other, &theirs_storage).unwrap(),
         )
         .unwrap(),
+        network_id: None,
     }];
     let ours_with = |mount_source: &str| {
         let ours = with_mount(&herdquay(), &format!("{mount_source}:/work"));
@@ -425,7 +432,7 @@ fn conflict_through_a_bind_mount() {
             vec![on_host(mount_source, 22)],
         )
         .unwrap();
-        check_conflicts(&ours, &storage, &reservations)
+        check_conflicts(&ours, None, &storage, &reservations)
     };
 
     // /mnt/alias is a bind of /srv/work/tree/subdir.
@@ -453,6 +460,7 @@ fn values_of(config: &LaunchConfig) -> LaunchValues {
         socket_dir: config.socket_dir().clone(),
         mounts: config.mounts().to_vec(),
         network: config.network().clone(),
+        aliases: config.aliases().to_vec(),
         memory: config.memory(),
         pids_limit: config.pids_limit(),
         cpus: config.cpus(),
@@ -670,4 +678,358 @@ fn reservation_round_trip() {
         .map(|(path, location)| (path.clone(), location.clone()))
         .collect();
     assert_eq!(held.storage, want);
+}
+
+const NETWORK_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const OTHER_NETWORK_ID: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+const BRIDGE_ID: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+/// `config` on `network`, with `aliases` there.
+fn aliased(config: &LaunchConfig, network: &str, aliases: &[&str]) -> LaunchConfig {
+    LaunchConfig::new(LaunchValues {
+        network: NetworkName::parse(network).unwrap(),
+        aliases: aliases
+            .iter()
+            .map(|alias| NetworkAlias::parse(alias).unwrap())
+            .collect(),
+        ..values_of(config)
+    })
+    .unwrap()
+}
+
+/// The engine of these tests: `docker` and `other` user-defined, and the default bridge.
+fn with_networks() -> FakeDocker {
+    let docker = FakeDocker::default();
+    docker.add_network("docker", NETWORK_ID, false);
+    docker.add_network("other", OTHER_NETWORK_ID, false);
+    docker.add_network("bridge", BRIDGE_ID, true);
+    docker
+}
+
+fn network_calls(docker: &FakeDocker) -> Vec<String> {
+    docker
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::InspectNetwork(network) => Some(network),
+            Call::List { .. }
+            | Call::Inspect(_)
+            | Call::Create(_)
+            | Call::Remove(_)
+            | Call::InspectImage(_)
+            | Call::DockerRoot
+            | Call::Upload(_)
+            | Call::Attach(_)
+            | Call::Wait(_)
+            | Call::Start(_)
+            | Call::Stop(_) => None,
+        })
+        .collect()
+}
+
+/// The network and aliases read back as written; a daemon from before those labels has neither,
+/// and one of the two labels without the other, or a bad value, refuses.
+#[test]
+fn network_labels_round_trip() {
+    let config = aliased(&herdquay(), "docker", &["docker", "dind"]);
+    let owner = ContainerId::parse(&"e".repeat(64)).unwrap();
+    let labels = spec::daemon_labels(&config, &owner, &storage(&config, 10)).unwrap();
+    let held = DaemonReservation::from_labels(&labels).unwrap();
+    assert_eq!(held.network.as_ref(), Some(config.network()));
+    assert_eq!(held.aliases, config.aliases());
+
+    let without = |removed: &[&str]| {
+        let mut labels = labels.clone();
+        for label in removed {
+            labels.remove(*label);
+        }
+        DaemonReservation::from_labels(&labels)
+    };
+    let legacy = without(&[LABEL_NETWORK, LABEL_ALIASES]).unwrap();
+    assert_eq!((legacy.network, legacy.aliases), (None, Vec::new()));
+    assert_eq!(
+        without(&[LABEL_ALIASES]).unwrap_err(),
+        LabelError::Missing(LABEL_ALIASES)
+    );
+    assert_eq!(
+        without(&[LABEL_NETWORK]).unwrap_err(),
+        LabelError::Missing(LABEL_NETWORK)
+    );
+
+    for (label, value) in [
+        (LABEL_ALIASES, "docker,Dind"),
+        (LABEL_ALIASES, "docker,"),
+        (LABEL_ALIASES, "swarm-rootless-docker-daemon-runner"),
+        (LABEL_ALIASES, "a,b,c,d,e,f,g,h,i"),
+        (LABEL_NETWORK, "host"),
+    ] {
+        let mut labels = labels.clone();
+        labels.insert(label.to_owned(), value.to_owned());
+        assert!(
+            matches!(
+                DaemonReservation::from_labels(&labels),
+                Err(LabelError::Invalid { label: found, .. }) if found == label
+            ),
+            "{label}={value}"
+        );
+    }
+}
+
+/// A shared alias conflicts unless both networks resolved to different IDs: a network that did
+/// not resolve may be the other one.
+#[test]
+fn alias_conflicts() {
+    let other = ContainerId::parse(&"e".repeat(64)).unwrap();
+    let reserve = |config: &LaunchConfig, network_id: Option<&str>| Reservation {
+        container: "d".repeat(64),
+        held: DaemonReservation::from_labels(
+            &spec::daemon_labels(config, &other, &storage(config, 10)).unwrap(),
+        )
+        .unwrap(),
+        network_id: network_id.map(ToOwned::to_owned),
+    };
+    let theirs = aliased(&runner(), "docker", &["docker", "dind"]);
+    let check = |ours: &LaunchConfig, mine: Option<&str>, theirs_id: Option<&str>| {
+        check_conflicts(
+            ours,
+            mine,
+            &storage(ours, 20),
+            &[reserve(&theirs, theirs_id)],
+        )
+    };
+
+    let shared = aliased(&herdquay(), "docker", &["build", "dind"]);
+    for (mine, theirs_id) in [
+        (Some(NETWORK_ID), Some(NETWORK_ID)),
+        (Some(NETWORK_ID), None),
+        (None, Some(NETWORK_ID)),
+        (None, None),
+    ] {
+        let error = check(&shared, mine, theirs_id).unwrap_err();
+        assert!(
+            matches!(&error, NodeError::Conflict { what: "--alias", instance, .. } if instance == "runner"),
+            "{mine:?} {theirs_id:?}: {error}"
+        );
+        assert!(error.to_string().contains("dind"), "{error}");
+    }
+    check(&shared, Some(NETWORK_ID), Some(OTHER_NETWORK_ID)).unwrap();
+    check(&aliased(&herdquay(), "docker", &["build"]), None, None).unwrap();
+    check(&herdquay(), None, None).unwrap();
+
+    // A daemon from before the network labels has no aliases.
+    let mut legacy = reserve(&runner(), None);
+    legacy.held.network = None;
+    check_conflicts(&shared, None, &storage(&shared, 20), &[legacy]).unwrap();
+}
+
+/// One network named by name, full ID or ID prefix is one network: the same alias on it
+/// conflicts whichever way each launcher named it. Another network does not; one that does not
+/// resolve here is not known to be another.
+#[tokio::test]
+async fn alias_conflicts_compare_resolved_networks() {
+    for (network, conflicts) in [
+        ("docker", true),
+        (NETWORK_ID, true),
+        (&NETWORK_ID[..12], true),
+        ("other", false),
+        (OTHER_NETWORK_ID, false),
+        ("absent", true),
+    ] {
+        let docker = with_networks();
+        let me = launcher(&docker, Status::Running);
+        let other = launcher(&docker, Status::Running);
+        add_daemon(
+            &docker,
+            &aliased(&runner(), "docker", &["docker"]),
+            &other,
+            10,
+            Status::Running,
+        );
+        let ours = aliased(&herdquay(), network, &["docker"]);
+
+        let reservations = survey(&docker, &ours, &me).await.unwrap();
+        let network_id = resolve_alias_network(&docker, &ours).await.unwrap();
+        let result = check_conflicts(
+            &ours,
+            network_id.as_deref(),
+            &storage(&ours, 20),
+            &reservations,
+        );
+        assert_eq!(result.is_err(), conflicts, "{network}: {result:?}");
+    }
+}
+
+/// Networks are resolved only when an alias could conflict: both sides need one.
+#[tokio::test]
+async fn networks_resolve_only_with_aliases() {
+    let docker = with_networks();
+    let me = launcher(&docker, Status::Running);
+    let other = launcher(&docker, Status::Running);
+    add_daemon(
+        &docker,
+        &aliased(&runner(), "other", &["docker"]),
+        &other,
+        10,
+        Status::Running,
+    );
+
+    survey(&docker, &herdquay(), &me).await.unwrap();
+    assert_eq!(
+        resolve_alias_network(&docker, &herdquay()).await.unwrap(),
+        None
+    );
+    assert!(network_calls(&docker).is_empty());
+
+    let ours = aliased(&herdquay(), "docker", &["build"]);
+    let reservations = survey(&docker, &ours, &me).await.unwrap();
+    assert_eq!(
+        reservations[0].network_id.as_deref(),
+        Some(OTHER_NETWORK_ID)
+    );
+    assert_eq!(network_calls(&docker), ["other"]);
+}
+
+/// The default bridge refuses aliases whatever it is called by; an inspect that fails other than
+/// not found refuses too.
+#[tokio::test]
+async fn alias_network_resolution_fails_closed() {
+    let docker = with_networks();
+    for network in ["bridge", BRIDGE_ID, &BRIDGE_ID[..12]] {
+        let values = LaunchValues {
+            network: NetworkName::parse(network).unwrap(),
+            aliases: vec![NetworkAlias::parse("docker").unwrap()],
+            ..values_of(&herdquay())
+        };
+        // `--network bridge` is refused lexically already.
+        let Ok(config) = LaunchConfig::new(values) else {
+            assert_eq!(network, "bridge");
+            continue;
+        };
+        let error = resolve_alias_network(&docker, &config).await.unwrap_err();
+        assert!(
+            matches!(&error, NodeError::AliasOnDefaultBridge { .. }),
+            "{network}: {error}"
+        );
+    }
+
+    let ours = aliased(&herdquay(), "docker", &["docker"]);
+    assert_eq!(
+        resolve_alias_network(&docker, &ours)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(NETWORK_ID)
+    );
+    docker.fail(
+        Op::InspectNetwork,
+        "",
+        DockerError::Other("boom".to_owned()),
+    );
+    let error = resolve_alias_network(&docker, &ours).await.unwrap_err();
+    assert!(matches!(&error, NodeError::Docker { .. }), "{error}");
+}
+
+/// Every name Docker's DNS registers for a daemon created from `spec`, but its random short ID:
+/// the container name, the hostname and the aliases.
+fn registered_names(spec: &spec::ContainerSpec) -> Vec<String> {
+    let mut names = vec![spec.name.clone()];
+    names.extend(spec.body.hostname.clone());
+    for endpoint in spec
+        .body
+        .networking_config
+        .iter()
+        .flat_map(|networking| networking.endpoints_config.iter().flat_map(HashMap::values))
+    {
+        names.extend(endpoint.aliases.clone().unwrap_or_default());
+    }
+    names
+}
+
+/// What a daemon registers is what the conflict check compares: [`spec::dns_names`].
+#[test]
+fn dns_names_are_what_docker_registers() {
+    let image = image();
+    let owner = ContainerId::parse(&"e".repeat(64)).unwrap();
+    for config in [
+        herdquay(),
+        aliased(&herdquay(), "docker", &["docker", "dind"]),
+    ] {
+        let spec = spec::daemon_spec(&config, &image, &owner, &storage(&config, 10)).unwrap();
+        let mut registered = registered_names(&spec);
+        registered.dedup();
+        assert_eq!(
+            registered,
+            spec::dns_names(config.instance(), config.aliases())
+        );
+    }
+}
+
+/// An instance's names never meet another's alias: instance `docker` without aliases and
+/// instance `runner` with `--alias docker` share one network, in either launch order, and no
+/// name either registers is the other's.
+#[tokio::test]
+async fn an_instance_name_is_never_an_alias() {
+    let named_docker = config("docker", "300000:65536", "docker");
+    let aliased_docker = aliased(&runner(), "docker", &["docker"]);
+    for (first, second) in [
+        (&named_docker, &aliased_docker),
+        (&aliased_docker, &named_docker),
+    ] {
+        let docker = with_networks();
+        let me = launcher(&docker, Status::Running);
+        let other = launcher(&docker, Status::Running);
+        add_daemon(&docker, first, &other, 10, Status::Running);
+
+        let reservations = survey(&docker, second, &me).await.unwrap();
+        let network_id = resolve_alias_network(&docker, second).await.unwrap();
+        check_conflicts(
+            second,
+            network_id.as_deref(),
+            &storage(second, 20),
+            &reservations,
+        )
+        .unwrap();
+
+        let image = image();
+        let first_names = registered_names(
+            &spec::daemon_spec(first, &image, &other, &storage(first, 10)).unwrap(),
+        );
+        let second_names = registered_names(
+            &spec::daemon_spec(second, &image, &me, &storage(second, 20)).unwrap(),
+        );
+        assert!(
+            first_names.iter().all(|name| !second_names.contains(name)),
+            "{first_names:?} and {second_names:?}"
+        );
+    }
+}
+
+/// The check compares every DNS name, not the aliases only: a reservation whose container name
+/// is one of the candidate's names conflicts (labels as an older or foreign launcher could have
+/// written them; ours cannot produce it).
+#[test]
+fn every_dns_name_is_compared() {
+    let other = ContainerId::parse(&"e".repeat(64)).unwrap();
+    let theirs = runner();
+    let mut held = DaemonReservation::from_labels(
+        &spec::daemon_labels(&theirs, &other, &storage(&theirs, 10)).unwrap(),
+    )
+    .unwrap();
+    held.instance = InstanceName::parse("herdquay").unwrap();
+    held.subuid = IdRange::parse("500000:65536").unwrap();
+    held.subgid = held.subuid;
+    held.storage.clear();
+    let reservation = Reservation {
+        container: "d".repeat(64),
+        held,
+        network_id: None,
+    };
+    let ours = herdquay();
+    let error = check_conflicts(&ours, None, &storage(&ours, 20), &[reservation]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("swarm-rootless-docker-daemon-herdquay"),
+        "{error}"
+    );
 }

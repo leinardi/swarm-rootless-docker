@@ -68,6 +68,9 @@ services:
       - --mount=/mnt/pool/herdquay/workspace:/home/herdquay/workspace
       # The daemon's network: its egress, and where its published ports answer.
       - --network=herdquay-docker
+      # A short name there: the consumer reaches published ports at docker:<port>, besides the
+      # daemon's own name, swarm-rootless-docker-daemon-herdquay.
+      - --alias=docker
       # The only limits that hold: the daemon and every container it runs share them.
       - --memory=8g
       - --pids-limit=8192
