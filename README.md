@@ -63,6 +63,9 @@ cosign verify ghcr.io/leinardi/swarm-rootless-docker:v0.1.0-uid568 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
+The signature is a Sigstore bundle, as cosign v3 writes it: verify with cosign v3, or with v2.6
+or later and `--new-bundle-format` (without it, cosign v2 reports `no signatures found`).
+
 ## Host requirements
 
 - **Docker Engine** in Swarm mode, tested on Docker 29. The launcher speaks Docker API 1.53, so an
