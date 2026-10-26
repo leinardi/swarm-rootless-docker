@@ -71,7 +71,10 @@ label() {
 expect "default user" "${uid}:${gid}" "$(docker image inspect "${image}" --format '{{.Config.User}}')"
 expect "uid label" "${uid}" "$(label io.github.leinardi.swarm-rootless-docker.uid)"
 expect "gid label" "${gid}" "$(label io.github.leinardi.swarm-rootless-docker.gid)"
-expect "base name label" "docker.io/library/docker:29-dind-rootless" \
+# The base the Dockerfile names, so a new Docker major needs no change here.
+dockerfile="$(dirname "$0")/../deployments/docker/Dockerfile"
+base_image="$(awk 'toupper($1) == "FROM" && $NF == "runtime" { print $(NF - 2) }' "${dockerfile}")"
+expect "base name label" "docker.io/library/${base_image}" \
 	"$(label org.opencontainers.image.base.name)"
 expect "entrypoint" "[${binary}]" "$(docker image inspect "${image}" --format '{{.Config.Entrypoint}}')"
 expect "no command" "[]" "$(docker image inspect "${image}" --format '{{.Config.Cmd}}')"

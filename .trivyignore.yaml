@@ -1,0 +1,8 @@
+# Trivy findings the release and scheduled scans accept. Both scans run with --ignore-unfixed, so
+# only a HIGH or CRITICAL vulnerability that has a fix somewhere upstream can fail them, and only
+# one the image adds to its base (.github/scripts/scan-findings.sh): upstream's own findings are
+# reported, never gated. An entry here is the only other exception. Every entry must say, in its
+# statement, why the finding does not apply or cannot be fixed here yet, carry an expiry date that
+# Trivy enforces (after which the finding fails the scans again), and be scoped to the paths it was
+# found in.
+vulnerabilities: []
