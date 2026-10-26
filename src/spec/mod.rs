@@ -24,7 +24,7 @@
 
 //! The containers the launcher creates, each from one function with no options: the daemon, the
 //! host-side probe and the node lock. Nothing in a compose file can widen them; the flags only
-//! pick the instance, its ranges, its host paths, its network and its limits.
+//! pick the instance, its ranges, its host paths, its network, its aliases there and its limits.
 //!
 //! The daemon's profile is the smallest that runs rootless dockerd unprivileged: all capabilities
 //! dropped except `SETUID` and `SETGID` (for `newuidmap` and `newgidmap`, which work through file
@@ -38,14 +38,16 @@ use std::collections::HashMap;
 use std::io;
 
 use bollard::models::{
-    ContainerCreateBody, DeviceMapping, HealthConfig, HostConfig, HostConfigCgroupnsModeEnum,
-    HostConfigLogConfig, Mount, MountBindOptions, MountBindOptionsPropagationEnum,
-    MountTmpfsOptions, MountType, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, DeviceMapping, EndpointSettings, HealthConfig, HostConfig,
+    HostConfigCgroupnsModeEnum, HostConfigLogConfig, Mount, MountBindOptions,
+    MountBindOptionsPropagationEnum, MountTmpfsOptions, MountType, NetworkingConfig, RestartPolicy,
+    RestartPolicyNameEnum,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    AbsolutePath, HostPath, IdRange, InstanceName, LaunchConfig, MAX_EXTRA_MOUNTS, NanoCpus,
+    AbsolutePath, HostPath, IdRange, InstanceName, LaunchConfig, MAX_ALIASES, MAX_EXTRA_MOUNTS,
+    NanoCpus, NetworkAlias, NetworkName,
 };
 use crate::mounts::{Device, Placement};
 
@@ -98,6 +100,10 @@ pub const LABEL_SUBGID: &str = "io.github.leinardi.swarm-rootless-docker.subgid"
 /// [`HostLocation`]), data root first, then the socket directory, then each mount source in flag
 /// order.
 pub const LABEL_STORAGE: &str = "io.github.leinardi.swarm-rootless-docker.storage";
+/// The daemon's `--network`, as given.
+pub const LABEL_NETWORK: &str = "io.github.leinardi.swarm-rootless-docker.network";
+/// The daemon's aliases on that network, comma-separated; empty for none.
+pub const LABEL_ALIASES: &str = "io.github.leinardi.swarm-rootless-docker.aliases";
 
 /// [`LABEL_ROLE`] of a daemon container.
 pub const ROLE_DAEMON: &str = "daemon";
@@ -342,14 +348,17 @@ pub enum LabelError {
     Invalid { label: &'static str, reason: String },
 }
 
-/// What a daemon holds on the node, read back from its labels: its instance, its ranges and its
-/// host paths with their identities.
+/// What a daemon holds on the node, read back from its labels: its instance, its ranges, its
+/// host paths with their identities, and its network with its aliases there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonReservation {
     pub instance: InstanceName,
     pub subuid: IdRange,
     pub subgid: IdRange,
     pub storage: Vec<(AbsolutePath, HostLocation)>,
+    /// `None` for a daemon from before [`LABEL_NETWORK`], which has no aliases either.
+    pub network: Option<NetworkName>,
+    pub aliases: Vec<NetworkAlias>,
 }
 
 impl DaemonReservation {
@@ -393,6 +402,7 @@ impl DaemonReservation {
                 Ok((path, location))
             })
             .collect::<Result<Vec<_>, LabelError>>()?;
+        let (network, aliases) = network_labels(labels)?;
         Ok(Self {
             instance: InstanceName::parse(get(LABEL_INSTANCE)?)
                 .map_err(|error| invalid_label(LABEL_INSTANCE, error))?,
@@ -401,8 +411,39 @@ impl DaemonReservation {
             subgid: IdRange::parse(get(LABEL_SUBGID)?)
                 .map_err(|error| invalid_label(LABEL_SUBGID, error))?,
             storage,
+            network,
+            aliases,
         })
     }
+}
+
+/// [`LABEL_NETWORK`] and [`LABEL_ALIASES`]: both absent for a daemon from before them, never one
+/// without the other.
+fn network_labels(
+    labels: &HashMap<String, String>,
+) -> Result<(Option<NetworkName>, Vec<NetworkAlias>), LabelError> {
+    let (network, aliases) = match (labels.get(LABEL_NETWORK), labels.get(LABEL_ALIASES)) {
+        (None, None) => return Ok((None, Vec::new())),
+        (Some(network), Some(aliases)) => (network, aliases),
+        (None, Some(_)) => return Err(LabelError::Missing(LABEL_NETWORK)),
+        (Some(_), None) => return Err(LabelError::Missing(LABEL_ALIASES)),
+    };
+    let network =
+        NetworkName::parse(network).map_err(|error| invalid_label(LABEL_NETWORK, error))?;
+    if aliases.is_empty() {
+        return Ok((Some(network), Vec::new()));
+    }
+    let aliases = aliases
+        .split(',')
+        .map(|alias| {
+            NetworkAlias::parse(alias)
+                .map_err(|error| invalid_label(LABEL_ALIASES, format!("{alias:?}: {error}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if aliases.len() > MAX_ALIASES {
+        return Err(invalid_label(LABEL_ALIASES, "too many aliases"));
+    }
+    Ok((Some(network), aliases))
 }
 
 /// A container to create: its name and the create request.
@@ -416,6 +457,16 @@ pub struct ContainerSpec {
 #[must_use]
 pub fn daemon_name(config: &LaunchConfig) -> String {
     format!("{PREFIX}-daemon-{}", config.instance())
+}
+
+/// The names a daemon answers to on its network, besides its random short ID: its container name,
+/// which is also its hostname, then its aliases. The container name is under [`PREFIX`], which no
+/// alias may use, and is one instance's.
+#[must_use]
+pub fn dns_names(instance: &InstanceName, aliases: &[NetworkAlias]) -> Vec<String> {
+    let mut names = vec![format!("{PREFIX}-daemon-{instance}")];
+    names.extend(aliases.iter().map(ToString::to_string));
+    names
 }
 
 /// The probe container's name for an instance.
@@ -455,13 +506,19 @@ pub fn daemon_labels(
         (LABEL_SUBUID.to_owned(), config.subuid().to_string()),
         (LABEL_SUBGID.to_owned(), config.subgid().to_string()),
         (LABEL_STORAGE.to_owned(), serde_json::to_string(&entries)?),
+        (LABEL_NETWORK.to_owned(), config.network().to_string()),
+        (LABEL_ALIASES.to_owned(), alias_list(config.aliases())),
     ]);
     Ok(labels)
 }
 
 /// The daemon container: the launcher's image running `daemon` as the image's UID and GID, with
-/// the fixed profile, the configured mounts, network and limits, and no restart policy (the
-/// launcher, and through it Swarm, owns the lifecycle).
+/// the fixed profile, the configured mounts, network, aliases and limits, and no restart policy
+/// (the launcher, and through it Swarm, owns the lifecycle).
+///
+/// Its hostname is its container name, so `docker info` reports a name that survives a recreate,
+/// and Docker's DNS, which registers the hostname too, gets no name beyond [`dns_names`]. Aliases
+/// go in the endpoint of `--network`; without any, there is no `NetworkingConfig` at all.
 ///
 /// `AutoRemove` is off: the launcher waits for `not-running` and removes the container itself, so
 /// an early exit cannot remove it before the wait is registered.
@@ -497,6 +554,7 @@ pub fn daemon_spec(
         image: Some(image.id.clone()),
         entrypoint: Some(vec![BINARY.to_owned()]),
         cmd: Some(vec![DAEMON_COMMAND.to_owned()]),
+        hostname: Some(daemon_name(config)),
         user: Some(format!("{}:{}", image.uid, image.gid)),
         labels: Some(daemon_labels(config, launcher, storage)?),
         healthcheck: Some(HealthConfig {
@@ -551,6 +609,7 @@ pub fn daemon_spec(
             }),
             ..HostConfig::default()
         }),
+        networking_config: networking_config(config),
         ..ContainerCreateBody::default()
     };
     Ok(ContainerSpec {
@@ -824,6 +883,36 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn alias_list(aliases: &[NetworkAlias]) -> String {
+    aliases
+        .iter()
+        .map(NetworkAlias::as_str)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn networking_config(config: &LaunchConfig) -> Option<NetworkingConfig> {
+    if config.aliases().is_empty() {
+        return None;
+    }
+    let endpoint = EndpointSettings {
+        aliases: Some(
+            config
+                .aliases()
+                .iter()
+                .map(|alias| alias.as_str().to_owned())
+                .collect(),
+        ),
+        ..EndpointSettings::default()
+    };
+    Some(NetworkingConfig {
+        endpoints_config: Some(HashMap::from([(
+            config.network().as_str().to_owned(),
+            endpoint,
+        )])),
+    })
 }
 
 fn bind(source: &str, target: &str, read_only: bool) -> Mount {

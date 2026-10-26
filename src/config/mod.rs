@@ -35,8 +35,12 @@ mod tests;
 
 use std::fmt;
 
+use crate::spec::PREFIX;
+
 /// The most extra bind mounts one daemon may get.
 pub const MAX_EXTRA_MOUNTS: usize = 16;
+/// The most network aliases one daemon may get.
+pub const MAX_ALIASES: usize = 8;
 /// The lowest first ID of a subordinate range: above every local account on the target hosts
 /// (568 for apps, 950 for the admin, 3000 and up for people).
 pub const MIN_RANGE_START: u32 = 100_000;
@@ -57,6 +61,10 @@ const NANOS_PER_CPU: i64 = 1_000_000_000;
 const MAX_PATH_LEN: usize = 4096;
 const MAX_INSTANCE_LEN: usize = 32;
 const MAX_NETWORK_LEN: usize = 64;
+/// One DNS label.
+const MAX_ALIAS_LEN: usize = 63;
+/// Docker's default bridge, which has no container DNS and refuses network-scoped aliases.
+const DEFAULT_BRIDGE: &str = "bridge";
 
 /// Host paths that no bind source may be, lie under, or contain: the host's system directories,
 /// its runtime state and its Docker data. A source that contains one (`/`, `/var`) would expose
@@ -153,6 +161,12 @@ pub enum ValueError {
     NetworkName,
     #[error("must be a named network, not host or none")]
     NetworkMode,
+    #[error(
+        "must be 1 to {MAX_ALIAS_LEN} lowercase letters, digits or '-', starting and ending with a letter or digit"
+    )]
+    NetworkAlias,
+    #[error("must not start with {PREFIX}, the prefix of the launcher's container names")]
+    AliasReserved,
     #[error("must be a whole number of bytes with an optional k, m or g suffix")]
     MemorySyntax,
     #[error("must be at least {} MiB", MIN_MEMORY_BYTES / 1024 / 1024)]
@@ -183,6 +197,14 @@ pub enum ConfigError {
     TargetOverlap { first: String, second: String },
     #[error("--mount may be given at most {MAX_EXTRA_MOUNTS} times, got {0}")]
     TooManyMounts(usize),
+    #[error("--alias may be given at most {MAX_ALIASES} times, got {0}")]
+    TooManyAliases(usize),
+    #[error("--alias {0} is given twice")]
+    DuplicateAlias(String),
+    #[error(
+        "--alias needs a user-defined network: --network {DEFAULT_BRIDGE} has no container DNS"
+    )]
+    AliasOnDefaultBridge,
 }
 
 /// The instance's name: the daemon container is `swarm-rootless-docker-<name>`.
@@ -531,6 +553,48 @@ impl fmt::Display for NetworkName {
     }
 }
 
+/// A name the daemon container also answers to on its network: one DNS label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkAlias(String);
+
+impl NetworkAlias {
+    /// Parses an alias: 1 to 63 of `[a-z0-9-]`, starting and ending with a letter or digit, and
+    /// not starting with [`PREFIX`], so it never names one of the launcher's containers.
+    ///
+    /// # Errors
+    ///
+    /// [`ValueError::NetworkAlias`] for a malformed alias, [`ValueError::AliasReserved`] for one
+    /// with the launcher's prefix.
+    pub fn parse(value: &str) -> Result<Self, ValueError> {
+        let bytes = value.as_bytes();
+        let edge = |byte: &u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+        let valid = !bytes.is_empty()
+            && bytes.len() <= MAX_ALIAS_LEN
+            && bytes.iter().all(|byte| edge(byte) || *byte == b'-')
+            && bytes.first().is_some_and(edge)
+            && bytes.last().is_some_and(edge);
+        if !valid {
+            return Err(ValueError::NetworkAlias);
+        }
+        if value.starts_with(PREFIX) {
+            return Err(ValueError::AliasReserved);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// The alias as given.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for NetworkAlias {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// The daemon container's memory limit, in bytes; swap is set to the same value, so none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryBytes(i64);
@@ -653,6 +717,7 @@ pub struct LaunchConfig {
     socket_dir: HostPath,
     mounts: Vec<ExtraMount>,
     network: NetworkName,
+    aliases: Vec<NetworkAlias>,
     memory: MemoryBytes,
     pids_limit: PidsLimit,
     cpus: Option<NanoCpus>,
@@ -668,6 +733,7 @@ pub struct LaunchValues {
     pub socket_dir: HostPath,
     pub mounts: Vec<ExtraMount>,
     pub network: NetworkName,
+    pub aliases: Vec<NetworkAlias>,
     pub memory: MemoryBytes,
     pub pids_limit: PidsLimit,
     pub cpus: Option<NanoCpus>,
@@ -676,7 +742,8 @@ pub struct LaunchValues {
 impl LaunchConfig {
     /// Checks the rules between flags: at most [`MAX_EXTRA_MOUNTS`] mounts; the data root, the
     /// socket directory and every mount source pairwise distinct and not nested; mount targets
-    /// pairwise distinct and not nested. `--subgid` defaults to `--subuid`.
+    /// pairwise distinct and not nested; at most [`MAX_ALIASES`] aliases, pairwise distinct, and
+    /// none on the default bridge. `--subgid` defaults to `--subuid`.
     ///
     /// # Errors
     ///
@@ -721,6 +788,17 @@ impl LaunchConfig {
                 }
             }
         }
+        if values.aliases.len() > MAX_ALIASES {
+            return Err(ConfigError::TooManyAliases(values.aliases.len()));
+        }
+        for (index, alias) in values.aliases.iter().enumerate() {
+            if values.aliases[..index].contains(alias) {
+                return Err(ConfigError::DuplicateAlias(alias.to_string()));
+            }
+        }
+        if !values.aliases.is_empty() && values.network.as_str() == DEFAULT_BRIDGE {
+            return Err(ConfigError::AliasOnDefaultBridge);
+        }
         Ok(Self {
             instance: values.instance,
             subuid: values.subuid,
@@ -729,6 +807,7 @@ impl LaunchConfig {
             socket_dir: values.socket_dir,
             mounts: values.mounts,
             network: values.network,
+            aliases: values.aliases,
             memory: values.memory,
             pids_limit: values.pids_limit,
             cpus: values.cpus,
@@ -775,6 +854,12 @@ impl LaunchConfig {
     #[must_use]
     pub fn network(&self) -> &NetworkName {
         &self.network
+    }
+
+    /// The daemon container's aliases on its network.
+    #[must_use]
+    pub fn aliases(&self) -> &[NetworkAlias] {
+        &self.aliases
     }
 
     /// The memory limit.

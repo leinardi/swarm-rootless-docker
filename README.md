@@ -135,7 +135,9 @@ The **consumer** mounts the socket directory read-only (a Unix socket needs no w
 mount), sets `DOCKER_HOST=unix://<mount>/docker.sock`, and mounts its workspace at the same path
 the daemon sees it at (`--mount SOURCE:TARGET`), so that `docker run -v "$PWD:/src"` and Compose
 bind mounts name a path the daemon can find. `docker info` then reports `rootless` among the
-security options.
+security options, and `swarm-rootless-docker-daemon-<instance>` as the daemon's `Name`. The
+consumer joins `--network` too: ports its containers publish answer there, at the daemon's names
+([Published ports](#published-ports)).
 
 ### Launch flags
 
@@ -144,13 +146,14 @@ profile is configurable. A bad or repeated flag exits 2 and names the flag.
 
 | Flag | Required | Rule |
 | --- | --- | --- |
-| `--instance NAME` | yes | 1 to 32 lowercase letters, digits and `-`, starting and ending with a letter or digit; the daemon container is `swarm-rootless-docker-daemon-NAME` |
+| `--instance NAME` | yes | 1 to 32 lowercase letters, digits and `-`, starting and ending with a letter or digit; the daemon container and its hostname are `swarm-rootless-docker-daemon-NAME` |
 | `--subuid START:COUNT` | yes | START at least 100000, COUNT at least 65536, ending below 4294967295 |
 | `--subgid START:COUNT` | no | the same rules; defaults to the `--subuid` range |
 | `--data-root PATH` | yes | the daemon's data root, owned by the image's UID |
 | `--socket-dir PATH` | yes | the directory the daemon creates `docker.sock` in, owned by the image's UID |
 | `--mount SOURCE:TARGET[:ro\|:rw]` | no, up to 16 | an extra bind mount, typically the workspace at the same path |
 | `--network NAME` | yes | the network the daemon joins: its egress, and where its published ports answer; not `host` or `none` |
+| `--alias NAME` | no, up to 8 | another name the daemon answers to on `--network` (e.g. `docker`): one DNS label of lowercase letters, digits and `-`, not starting with `swarm-rootless-docker`; needs a user-defined network, not the default `bridge` |
 | `--memory SIZE` | yes | bytes, or with a `k`, `m` or `g` suffix; at least 256 MiB; also the swap limit |
 | `--pids-limit N` | yes | 256 to 4194304 |
 | `--cpus N` | no | above 0, at most 1024 (e.g. `2` or `1.5`) |
@@ -244,12 +247,33 @@ record it.
   dockerd itself. That is accepted: the launcher then exits non-zero, Swarm restarts it, and a new,
   healthy daemon comes back, at the cost of every container that was running. The host and other
   instances are not affected.
-- **Published ports** answer at the daemon container's address on `--network`, not at the
-  consumer's `localhost`.
+- **Published ports** answer on `--network`, never at the consumer's `localhost`
+  ([below](#published-ports)).
 - **No privileged containers** inside, so no Docker-in-Docker, no BPF, no host namespaces, and no
   kernel modules: what a test needs (`ifb`, `sch_netem`) must be loaded on the host.
 - **Network:** the daemon's containers have the daemon's network reach. Limit its egress in the
   deployment if they should not reach the LAN.
+
+### Published ports
+
+A port a container publishes inside the daemon (`docker run -p 18080:80`) answers at the daemon
+container's address on `--network`. On a user-defined network (a bridge, or an attachable overlay
+as in the example stack) any container on it reaches that address by name, through Docker's DNS:
+
+- `swarm-rootless-docker-daemon-<instance>:<port>`, always: the container name, which is also its
+  hostname. The name is a stable contract: it does not change across a recreate, a restart or an
+  upgrade.
+- `<alias>:<port>` for each `--alias`, e.g. `docker:18080` with `--alias=docker`.
+
+The default `bridge` has no container DNS: there, only the daemon's address works
+(`docker inspect` on the daemon container), and `--alias` is refused.
+
+An alias must be unique on its network. The launcher refuses an alias that is already one of the
+names of another daemon on the same node and network (by network ID, however each launcher names
+it); a daemon's own name cannot meet an alias, since no alias may start with
+`swarm-rootless-docker`. It cannot see other nodes, Swarm services or other containers: when two
+of them answer to one name, Docker's DNS returns either. On a multi-node overlay, pick aliases,
+and instance names, that no other node uses on that network.
 
 ## What CI does not cover
 

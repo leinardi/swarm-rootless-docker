@@ -29,8 +29,8 @@
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::config::{
-    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NanoCpus, NetworkName,
-    PidsLimit,
+    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NanoCpus, NetworkAlias,
+    NetworkName, PidsLimit,
 };
 use crate::logger::{LogFormat, LogLevel};
 use crate::version;
@@ -111,6 +111,9 @@ pub struct LaunchArgs {
     /// Docker network the daemon container joins.
     #[arg(long, value_name = "NAME", value_parser = NetworkName::parse)]
     pub network: NetworkName,
+    /// Another name the daemon answers to on --network, e.g. docker; repeatable.
+    #[arg(long = "alias", value_name = "NAME", value_parser = NetworkAlias::parse)]
+    pub aliases: Vec<NetworkAlias>,
     /// Memory limit of the daemon container (bytes, or with a k, m or g suffix); also its swap.
     #[arg(long, value_name = "SIZE", value_parser = MemoryBytes::parse)]
     pub memory: MemoryBytes,
@@ -140,6 +143,7 @@ impl LaunchArgs {
             socket_dir: self.socket_dir,
             mounts: self.mounts,
             network: self.network,
+            aliases: self.aliases,
             memory: self.memory,
             pids_limit: self.pids_limit,
             cpus: self.cpus,
@@ -210,6 +214,7 @@ mod tests {
         };
         assert_eq!(args.instance.as_str(), "herdquay");
         assert!(args.subgid.is_none() && args.cpus.is_none() && args.mounts.is_empty());
+        assert!(args.aliases.is_empty());
     }
 
     /// The subcommands the container specs run are the ones this binary has, and take no argument.
@@ -294,6 +299,18 @@ mod tests {
     }
 
     #[test]
+    fn aliases_repeat() {
+        let Command::Launch(args) = parse(&["--alias", "docker", "--alias", "dind"])
+            .unwrap()
+            .command
+        else {
+            panic!("not launch");
+        };
+        let aliases: Vec<&str> = args.aliases.iter().map(NetworkAlias::as_str).collect();
+        assert_eq!(aliases, ["docker", "dind"]);
+    }
+
+    #[test]
     fn every_required_flag_is_required() {
         for (index, flag) in REQUIRED.iter().enumerate().skip(2).step_by(2) {
             let without: Vec<&str> = REQUIRED
@@ -347,6 +364,9 @@ mod tests {
         let error = parse(&["--mount", "/etc:/srv/etc"]).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::ValueValidation);
         assert!(error.to_string().contains("--mount"), "{error}");
+        let error = parse(&["--alias", "Docker"]).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::ValueValidation);
+        assert!(error.to_string().contains("--alias"), "{error}");
     }
 
     #[test]

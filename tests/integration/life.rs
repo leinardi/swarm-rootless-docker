@@ -153,10 +153,53 @@ fn check_workspace(case: &Case) {
     assert_eq!(owners, format!("568:568\n{mapped}:{mapped}"));
 }
 
+/// The daemon's names: `docker info` reports its container name, and a port published inside answers
+/// at the container name and at each alias, from another container on `--network`.
+fn check_names(case: &mut Case, flags: &Flags, daemon: &str) {
+    let name = case.consumer(&["info", "--format", "{{.Name}}"]);
+    assert_eq!(name.trim(), daemon);
+
+    let server = format!("srd-it-{}-httpd", case.name);
+    case.consumer(&[
+        "run",
+        "-d",
+        "--name",
+        &server,
+        "-p",
+        "18080:80",
+        INNER_IMAGE,
+        "sh",
+        "-c",
+        "echo served > /tmp/index.html && exec httpd -f -p 80 -h /tmp",
+    ]);
+    let client = case.track(&format!("srd-it-{}-client", case.name));
+    let mut hosts = vec![daemon];
+    hosts.extend(flags.aliases.iter().map(String::as_str));
+    for host in hosts {
+        // httpd may take a moment to listen: a bounded retry, not a sleep.
+        let page = docker_ok(&[
+            "run",
+            "--rm",
+            "--name",
+            &client,
+            "--network",
+            NETWORK,
+            INNER_IMAGE,
+            "sh",
+            "-c",
+            r#"for try in 1 2 3 4 5 6 7 8 9 10; do wget -qO- "http://$0:18080/" && exit 0; sleep 1; done; exit 1"#,
+            host,
+        ]);
+        assert_eq!(page.trim(), "served", "{host}");
+    }
+    case.consumer(&["rm", "-f", &server]);
+}
+
 /// The whole life of one daemon: the launcher becomes healthy; the daemon is the fixed profile,
 /// from the launcher's own image, running as the daemon UID; the consumer sees a rootless engine
 /// with nothing in it; files its containers write belong to the consumer (inner root) or to the
-/// subordinate range; nothing listens on TCP; SIGTERM removes the daemon in time; and no anonymous
+/// subordinate range; nothing listens on TCP; its hostname is its name and a published port
+/// answers at its names on the network; SIGTERM removes the daemon in time; and no anonymous
 /// volume is left behind.
 #[test]
 fn a_daemon_runs_serves_the_consumer_and_stops() {
@@ -164,7 +207,10 @@ fn a_daemon_runs_serves_the_consumer_and_stops() {
         return;
     };
     let mut case = Case::new("life", 0);
-    let flags = case.flags();
+    let flags = Flags {
+        aliases: vec!["srd-it-life-docker".to_owned()],
+        ..case.flags()
+    };
     let launcher = case.start("launcher", &flags);
     Case::wait_healthy(&launcher);
     let daemon = Case::daemon(&flags);
@@ -172,6 +218,7 @@ fn a_daemon_runs_serves_the_consumer_and_stops() {
     check_profile(&launcher, &daemon);
     check_engine(&case, &daemon);
     check_workspace(&case);
+    check_names(&mut case, &flags, &daemon);
 
     let stopping = Instant::now();
     docker_ok(&["stop", "-t", "40", &launcher]);

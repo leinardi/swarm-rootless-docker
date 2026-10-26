@@ -39,6 +39,7 @@ fn values() -> LaunchValues {
                 .unwrap(),
         ],
         network: NetworkName::parse("herdquay_docker").unwrap(),
+        aliases: Vec::new(),
         memory: MemoryBytes::parse("8g").unwrap(),
         pids_limit: PidsLimit::parse("8192").unwrap(),
         cpus: Some(NanoCpus::parse("4").unwrap()),
@@ -438,4 +439,82 @@ fn config_caps_the_mount_count() {
     let mut most = values();
     most.mounts = mounts(MAX_EXTRA_MOUNTS);
     assert!(LaunchConfig::new(most).is_ok());
+}
+
+#[test]
+fn network_aliases() {
+    for good in [
+        "docker",
+        "d",
+        "0",
+        "dind-1",
+        &"a".repeat(63),
+        "swarm-rootless",
+    ] {
+        assert!(NetworkAlias::parse(good).is_ok(), "{good:?} refused");
+    }
+    for bad in [
+        "",
+        "-docker",
+        "docker-",
+        "Docker",
+        "do_cker",
+        "docker.local",
+        "do cker",
+        "dòcker",
+        &"a".repeat(64),
+    ] {
+        assert_eq!(
+            NetworkAlias::parse(bad),
+            Err(ValueError::NetworkAlias),
+            "{bad:?}"
+        );
+    }
+    for reserved in [
+        "swarm-rootless-docker",
+        "swarm-rootless-docker-lock",
+        "swarm-rootless-docker-daemon-runner",
+    ] {
+        assert_eq!(
+            NetworkAlias::parse(reserved),
+            Err(ValueError::AliasReserved),
+            "{reserved:?}"
+        );
+    }
+}
+
+#[test]
+fn config_checks_the_aliases() {
+    let aliases = |names: &[&str]| -> Vec<NetworkAlias> {
+        names
+            .iter()
+            .map(|name| NetworkAlias::parse(name).unwrap())
+            .collect()
+    };
+    let with = |names: &[&str], network: &str| {
+        LaunchConfig::new(LaunchValues {
+            aliases: aliases(names),
+            network: NetworkName::parse(network).unwrap(),
+            ..values()
+        })
+    };
+    let config = with(&["docker", "dind"], "herdquay_docker").unwrap();
+    assert_eq!(config.aliases(), aliases(&["docker", "dind"]).as_slice());
+    assert_eq!(
+        with(&["docker", "dind", "docker"], "herdquay_docker"),
+        Err(ConfigError::DuplicateAlias("docker".to_owned()))
+    );
+    assert_eq!(
+        with(&["docker"], "bridge"),
+        Err(ConfigError::AliasOnDefaultBridge)
+    );
+    assert!(with(&[], "bridge").is_ok());
+
+    let names: Vec<String> = (0..=MAX_ALIASES).map(|index| format!("a{index}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    assert_eq!(
+        with(&names, "herdquay_docker"),
+        Err(ConfigError::TooManyAliases(MAX_ALIASES + 1))
+    );
+    assert!(with(&names[..MAX_ALIASES], "herdquay_docker").is_ok());
 }

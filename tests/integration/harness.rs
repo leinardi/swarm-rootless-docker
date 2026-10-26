@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use swarm_rootless_docker::config::{
     ExtraMount, HostPath, IdRange, InstanceName, LaunchConfig, LaunchValues, MemoryBytes,
-    NetworkName, PidsLimit,
+    NetworkAlias, NetworkName, PidsLimit,
 };
 
 pub(crate) const DEFAULT_IMAGE: &str = "ghcr.io/leinardi/swarm-rootless-docker:dev-uid568";
@@ -291,6 +291,7 @@ pub(crate) struct Flags {
     pub(crate) data_root: String,
     pub(crate) socket_dir: String,
     pub(crate) mounts: Vec<String>,
+    pub(crate) aliases: Vec<String>,
     pub(crate) memory: String,
 }
 
@@ -318,6 +319,9 @@ impl Flags {
         for mount in &self.mounts {
             args.extend(["--mount".to_owned(), mount.clone()]);
         }
+        for alias in &self.aliases {
+            args.extend(["--alias".to_owned(), alias.clone()]);
+        }
         args
     }
 
@@ -328,6 +332,10 @@ impl Flags {
         for mount in &self.mounts {
             mounts.push(must(ExtraMount::parse(mount), "--mount"));
         }
+        let mut aliases = Vec::new();
+        for alias in &self.aliases {
+            aliases.push(must(NetworkAlias::parse(alias), "--alias"));
+        }
         must(
             LaunchConfig::new(LaunchValues {
                 instance: must(InstanceName::parse(&self.instance), "--instance"),
@@ -337,6 +345,7 @@ impl Flags {
                 socket_dir: must(HostPath::parse(&self.socket_dir), "--socket-dir"),
                 mounts,
                 network: must(NetworkName::parse(NETWORK), "--network"),
+                aliases,
                 memory: must(MemoryBytes::parse(&self.memory), "--memory"),
                 pids_limit: must(PidsLimit::parse("4096"), "--pids-limit"),
                 cpus: None,
@@ -399,6 +408,7 @@ impl Case {
             data_root: self.data_root.clone(),
             socket_dir: self.socket_dir.clone(),
             mounts: vec![format!("{}:{}", self.work, self.work)],
+            aliases: Vec::new(),
             memory: "2g".to_owned(),
         }
     }

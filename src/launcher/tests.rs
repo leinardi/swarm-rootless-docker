@@ -29,7 +29,8 @@ use tokio::sync::Notify;
 
 use super::*;
 use crate::config::{
-    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NetworkName, PidsLimit,
+    ExtraMount, HostPath, IdRange, InstanceName, LaunchValues, MemoryBytes, NetworkAlias,
+    NetworkName, PidsLimit,
 };
 use crate::docker::MountInfo;
 use crate::docker::fake::{self, Call, FakeDocker, Op, SIGTERM_EXIT, Script};
@@ -70,6 +71,7 @@ fn config(instance: &str, subuid: &str, root: &str) -> LaunchConfig {
         socket_dir: HostPath::parse(&format!("/mnt/{root}/socket")).unwrap(),
         mounts: vec![ExtraMount::parse(&format!("/mnt/{root}/work:/work")).unwrap()],
         network: NetworkName::parse("docker").unwrap(),
+        aliases: Vec::new(),
         memory: MemoryBytes::parse("1g").unwrap(),
         pids_limit: PidsLimit::parse("1024").unwrap(),
         cpus: None,
@@ -769,6 +771,104 @@ async fn a_created_daemon_is_a_reservation_before_it_starts() {
         docker.exit(&held.id, 0);
     });
     assert_eq!(result.unwrap(), 0);
+}
+
+const NETWORK_ID: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const BRIDGE_ID: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+
+/// `config` on `network`, with `aliases` there.
+fn aliased(config: &LaunchConfig, network: &str, aliases: &[&str]) -> LaunchConfig {
+    LaunchConfig::new(LaunchValues {
+        instance: config.instance().clone(),
+        subuid: config.subuid(),
+        subgid: Some(config.subgid()),
+        data_root: config.data_root().clone(),
+        socket_dir: config.socket_dir().clone(),
+        mounts: config.mounts().to_vec(),
+        network: NetworkName::parse(network).unwrap(),
+        aliases: aliases
+            .iter()
+            .map(|alias| NetworkAlias::parse(alias).unwrap())
+            .collect(),
+        memory: config.memory(),
+        pids_limit: config.pids_limit(),
+        cpus: config.cpus(),
+    })
+    .unwrap()
+}
+
+/// A live daemon's alias is refused to a second instance on the same network, though the two
+/// launchers name the network differently (by name, by ID); nothing of the second is created.
+#[tokio::test]
+async fn an_alias_is_one_daemons_per_network() {
+    let docker = node();
+    docker.add_network("docker", NETWORK_ID, false);
+    let first = aliased(&herdquay(), "docker", &["docker"]);
+    let second = aliased(
+        &config("runner", "200000:65536", "runner"),
+        NETWORK_ID,
+        &["docker"],
+    );
+    let first_launcher = add_launcher(&docker, "first-launcher");
+    let second_launcher = add_launcher(&docker, "second-launcher");
+    probe_reports(&docker, &first, &accepted(&first, 10), 0);
+    probe_reports(&docker, &second, &accepted(&second, 20), 0);
+    daemon_runs(&docker, &first, None);
+    let (first_launch, _first_harness) =
+        launch(&docker, &first, &first_launcher, Timing::default());
+    let first_name = spec::daemon_name(&first);
+
+    let (result, ()) = tokio::join!(first_launch.run(), async {
+        until("the first daemon runs", || {
+            docker
+                .by_name(&first_name)
+                .is_some_and(|daemon| daemon.status == fake::Status::Running)
+        })
+        .await;
+        let held = docker.by_name(&first_name).unwrap();
+
+        let (second_launch, _second_harness) =
+            launch(&docker, &second, &second_launcher, Timing::default());
+        let error = second_launch.run().await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                LaunchError::Node(NodeError::Conflict { what: "--alias", container, .. })
+                    if *container == short(&held.id)
+            ),
+            "{error}"
+        );
+        assert!(docker.by_name(&spec::daemon_name(&second)).is_none());
+        assert!(docker.by_name(&spec::probe_name(&second)).is_none());
+        docker.exit(&held.id, 0);
+    });
+    assert_eq!(result.unwrap(), 0);
+}
+
+/// Aliases on the default bridge, named by its ID, refuse before the probe. (Without aliases the
+/// network is never inspected: the call list of `runs_in_order_and_returns_the_daemon_status`.)
+#[tokio::test]
+async fn aliases_on_the_default_bridge_are_refused() {
+    let docker = node();
+    docker.add_network("bridge", BRIDGE_ID, true);
+    let config = aliased(&herdquay(), BRIDGE_ID, &["docker"]);
+    let me = add_launcher(&docker, "launcher");
+    let (launch, _harness) = launch(&docker, &config, &me, Timing::default());
+
+    let error = launch.run().await.unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            LaunchError::Node(NodeError::AliasOnDefaultBridge { .. })
+        ),
+        "{error}"
+    );
+    assert_eq!(left(&docker), vec!["launcher"]);
+    assert!(
+        !docker
+            .calls()
+            .contains(&Call::Create(spec::probe_name(&config)))
+    );
 }
 
 /// Without the host socket mounted where the launcher reaches it, nothing is created.

@@ -40,13 +40,21 @@ a TCP listener.
    - owned by a running launcher, or unknown: refuse (exit 1).
 4. **Under the lock, probe.** Run the probe container for this instance's paths and ranges, with
    the host's paths that are always denied (Docker's data root and the source of the launcher's own
-   socket mount). Its report must be exactly one line that agrees with its exit code.
+   socket mount). Its report must be exactly one line that agrees with its exit code. Before it,
+   with `--alias`, the launcher resolves `--network` to its full ID (a name, an ID and an ID prefix
+   name one network), and refuses the default bridge however it is named.
 5. **Under the lock, check conflicts** against every listed daemon, from their labels: an
-   overlapping subordinate range, or a path that is the same, nested, or reaches the same storage
-   (by host location, not only by name).
+   overlapping subordinate range, a path that is the same, nested, or reaches the same storage
+   (by host location, not only by name), or a DNS name both have on the same network: the
+   container name, which is also the hostname, and the aliases. Only an alias can meet another
+   daemon's names (container names differ by instance, under a prefix no alias may take). The
+   networks are compared by resolved ID, and resolved only when both have aliases; a network that
+   does not resolve (an attachable overlay this node has not joined yet) counts as the same.
 6. **Under the lock, create the daemon** with the fixed spec and labels that record the instance,
-   the ranges and each path's host location. Then release the lock. If the release fails, the
-   daemon is removed: an unreleased lock with a daemon behind it would block the node.
+   the ranges, each path's host location, the network and the aliases. Then release the lock. If
+   the release fails, the daemon is removed: an unreleased lock with a daemon behind it would
+   block the node. A daemon without the network and alias labels (from v0.1.0) holds no alias;
+   one with only one of them is refused.
 7. **Start.** Upload `/etc/subuid` and `/etc/subgid` (root-owned, `0644`) into the created
    container, attach to its output, start it, and only then register the wait: Docker's
    `not-running` wait answers at once for a created container, and with `AutoRemove=false` a late
@@ -122,4 +130,7 @@ One function builds it, and a unit test pins it whole: the launcher's own image 
 UID and GID, the [profile in the README](../README.md#the-daemons-profile), `Mounts` (never `Binds`,
 so a missing source fails the create), tmpfs at `/var/lib/docker` and `/run/user`, the resources
 from the flags (swap equal to memory), a `local` log driver (10 MB × 3), a 15 s stop timeout,
-`RestartPolicy=no` and `AutoRemove=false`.
+`RestartPolicy=no` and `AutoRemove=false`. Its `Hostname` is its container name, so `docker info`
+keeps one `Name` across recreates, and Docker's DNS, which registers the hostname too, learns no
+name the conflict check does not compare; with `--alias`, `NetworkingConfig` gives the endpoint on
+`--network` those aliases, and without, there is no `NetworkingConfig`.
