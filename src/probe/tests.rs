@@ -632,7 +632,9 @@ impl Drop for Scratch {
 }
 
 /// [`RealHost`] on real files: types, owner and inode as `std` sees them, never following a
-/// symlink, absent xattrs and files as `None`. With `setfacl` installed, a POSIX ACL shows up.
+/// symlink, absent xattrs and files as `None`. With `setfacl` installed, a POSIX ACL shows up. On
+/// ZFS with `acltype=nfsv4` (TrueNAS) every new directory carries an NFSv4 ACL, so that one is
+/// only checked to decode and be trivial when present.
 #[test]
 fn real_host_reads_what_the_kernel_says() {
     let scratch = Scratch::new("real-host");
@@ -662,8 +664,18 @@ fn real_host_reads_what_the_kernel_says() {
         host.lstat(&scratch.path("missing")).unwrap_err().kind(),
         io::ErrorKind::NotFound
     );
-    for name in [POSIX_ACL_XATTRS[0], POSIX_ACL_XATTRS[1], nfs4::XATTR] {
+    for name in [
+        POSIX_ACL_XATTRS[0],
+        POSIX_ACL_XATTRS[1],
+        "user.swarm-rootless-docker.absent",
+    ] {
         assert_eq!(host.xattr(&dir, name).unwrap(), None, "{name}");
+    }
+    // On ZFS with nfs4acl (TrueNAS) every new directory carries the ACL: then it must be one the
+    // probe accepts.
+    if let Some(bytes) = host.xattr(&dir, nfs4::XATTR).unwrap() {
+        let acl = nfs4::decode(&bytes).unwrap();
+        nfs4::check_trivial(&acl, meta.mode).unwrap();
     }
     assert_eq!(host.read(&scratch.path("missing")).unwrap(), None);
     assert_eq!(host.read(&file).unwrap().as_deref(), Some("x"));
