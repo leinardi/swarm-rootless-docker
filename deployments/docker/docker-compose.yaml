@@ -1,0 +1,106 @@
+# A Docker Swarm stack that gives one consumer, here "herdquay", its own rootless Docker daemon:
+#
+#   DOCKER_GID="$(stat -c %g /var/run/docker.sock)" docker stack deploy -c docker-compose.yaml herdquay-docker
+#
+# The launcher service creates the daemon container (swarm-rootless-docker-daemon-herdquay) on the
+# same node through the host socket, supervises it and removes it when the task stops. The consumer
+# reaches the daemon through the socket directory only (see the consumer below), never through the
+# host socket. Before the first deploy, on the node (see the README):
+#
+#   - the data root and socket directory exist, owned by the image's UID (568), mode 0750, under
+#     parents that are root-owned, not group- or other-writable, with no extended ACL;
+#   - the subordinate range is allocated to this instance alone, in the homelab's records;
+#   - on hosts that restrict unprivileged user namespaces through AppArmor (Ubuntu 23.10+),
+#     kernel.apparmor_restrict_unprivileged_userns is 0.
+#
+# The consumer gets the socket directory read-only (a socket needs no write access to its mount),
+# the workspace at the path the daemon sees it at, and DOCKER_HOST naming the socket.
+#
+# The launcher's image is the floating tag: the newest release on Docker 29 for UID 568. Pin
+# vX.Y.Z-uid568 instead to update by hand. Any update restarts the daemon, and with it every
+# container it runs.
+services:
+  consumer:
+    image: ghcr.io/leinardi/herdquay:v0.3.0
+    volumes:
+      - type: bind
+        source: /mnt/pool/herdquay/docker-socket
+        target: /run/docker
+        read_only: true
+      - type: bind
+        source: /mnt/pool/herdquay/workspace
+        target: /home/herdquay/workspace
+    environment:
+      DOCKER_HOST: unix:///run/docker/docker.sock
+    networks:
+      - docker
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.hostname == castor
+
+  launcher:
+    image: ghcr.io/leinardi/swarm-rootless-docker:29-uid568
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      # The launcher's status socket, for the healthcheck.
+      - type: tmpfs
+        target: /tmp
+      # Upstream's two VOLUMEs, which an image cannot undeclare: without these, every task would
+      # leave two anonymous volumes behind.
+      - type: tmpfs
+        target: /home/rootless/.local/share/docker
+      - type: tmpfs
+        target: /var/lib/docker
+    networks:
+      - launcher
+    command:
+      - launch
+      - --instance=herdquay
+      - --subuid=200000:65536
+      - --data-root=/mnt/pool/herdquay/docker
+      - --socket-dir=/mnt/pool/herdquay/docker-socket
+      # The consumer's workspace, at the same path inside the daemon: docker run -v "$PWD:/src"
+      # and Compose bind mounts from the workspace then name a path the daemon can see.
+      - --mount=/mnt/pool/herdquay/workspace:/home/herdquay/workspace
+      # The daemon's network: its egress, and where its published ports answer.
+      - --network=herdquay-docker
+      # The only limits that hold: the daemon and every container it runs share them.
+      - --memory=8g
+      - --pids-limit=8192
+      - --cpus=4
+    # Non-root, in the host socket's group, and nothing else: the image's default user is the
+    # daemon's UID, which has no business with the host socket.
+    user: "65534:${DOCKER_GID:?set DOCKER_GID to the group of /var/run/docker.sock}"
+    cap_drop:
+      - ALL
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          # The host paths and the subordinate range belong to one node.
+          - node.hostname == castor
+      # stop-first, Swarm's default, said out loud: start-first would run two launchers for one
+      # data root, and the second is refused until the first is gone.
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
+    read_only: true
+    # The launcher stops the daemon (15 s), then removes it, within 30 s.
+    stop_grace_period: 40s
+
+networks:
+  # The launcher talks to the host socket only: no route out.
+  launcher:
+    driver: overlay
+    internal: true
+  # The daemon's network, by a fixed name: attachable, so the daemon container (a plain container,
+  # not a service) can join it, and shared with the consumer, which reaches published ports there.
+  docker:
+    name: herdquay-docker
+    driver: overlay
+    attachable: true
