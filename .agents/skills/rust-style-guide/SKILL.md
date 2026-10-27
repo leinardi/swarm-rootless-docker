@@ -195,6 +195,11 @@ prefer extending the `DockerApi` trait over a side channel to the client.
 - A `_ =>` arm on an enum (§6).
 - A daemon spec field that comes from anything but a validated type (§8).
 - Stopping or removing by name, or deciding a reservation from a listing without `all = true`.
+- A `Regex` compiled where it is used: a fixed pattern is a `static NAME: LazyLock<Regex>` beside
+  its user, compiled once per process, and a pattern built from runtime data is compiled once,
+  outside the loop that uses it. A helper that returns a fresh `Regex` per call is the trap when it
+  is called per line or per file: in an unoptimised test build, one such helper in
+  swarm-device-access's meta-tests took 27 s of a 36 s `cargo test`.
 - Designing for hypothetical requirements: no configurability or abstractions for features that
   do not exist yet. A new launcher flag is a widening of the trust boundary and needs a reason.
 - Skipping or suppressing pre-commit hooks (`--no-verify`).
