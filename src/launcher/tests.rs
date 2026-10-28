@@ -621,6 +621,109 @@ async fn a_daemon_that_does_not_stop_is_removed_by_force() {
     assert_eq!(left(&docker), vec!["launcher"]);
 }
 
+/// A stalled health read cannot consume time before the stop and cleanup budgets begin.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_health_check_cannot_extend_the_shutdown_budget() {
+    let docker = node();
+    let config = herdquay();
+    let me = add_launcher(&docker, "launcher");
+    probe_reports(&docker, &config, &accepted(&config, 10), 0);
+    daemon_runs(&docker, &config, None);
+    let daemon = nth(DAEMON);
+    docker.gate_inspect(&daemon, Arc::new(Notify::new()));
+    docker.fail(Op::Stop, &daemon, DockerError::Other("refused".to_owned()));
+    let timing = Timing::default();
+    let (launch, harness) = launch(&docker, &config, &me, timing);
+    let run = launch.run();
+    tokio::pin!(run);
+    tokio::select! {
+        result = &mut run => panic!("launch ended before its health check: {result:?}"),
+        () = until("the stalled health check", || {
+            docker.calls().contains(&Call::Inspect(daemon.clone()))
+        }) => {}
+    }
+    docker.hold_output(&daemon);
+    let stopped_at = Instant::now();
+    harness.stop.send(true).unwrap();
+    let budget = timing.stop + timing.finish;
+    let result = tokio::time::timeout(budget + Duration::from_secs(1), run)
+        .await
+        .expect("a health check must not delay shutdown");
+    assert!(
+        matches!(result, Err(LaunchError::StopTimeout(_))),
+        "{result:?}"
+    );
+    assert_eq!(stopped_at.elapsed(), budget);
+    assert_eq!(left(&docker), vec!["launcher"]);
+}
+
+/// A stalled health read cannot hide the daemon's exit or a failed log stream.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_health_check_does_not_hide_daemon_events() {
+    enum Event {
+        Exit,
+        LogFailure,
+    }
+
+    for event in [Event::Exit, Event::LogFailure] {
+        let docker = node();
+        let config = herdquay();
+        let me = add_launcher(&docker, "launcher");
+        probe_reports(&docker, &config, &accepted(&config, 10), 0);
+        daemon_runs(&docker, &config, None);
+        let daemon = nth(DAEMON);
+        docker.gate_inspect(&daemon, Arc::new(Notify::new()));
+        let (launch, _harness) = launch(&docker, &config, &me, Timing::default());
+        let run = launch.run();
+        tokio::pin!(run);
+        tokio::select! {
+            result = &mut run => panic!("launch ended before its health check: {result:?}"),
+            () = until("the stalled health check", || {
+                docker.calls().contains(&Call::Inspect(daemon.clone()))
+            }) => {}
+        }
+        match event {
+            Event::Exit => docker.exit(&daemon, 7),
+            Event::LogFailure => docker.fail_output(&daemon, DockerError::Timeout),
+        }
+        let result = tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .expect("a health check must not hide daemon events");
+        match event {
+            Event::Exit => assert_eq!(result.unwrap(), 7),
+            Event::LogFailure => assert!(
+                matches!(result, Err(LaunchError::LogStream(_))),
+                "{result:?}"
+            ),
+        }
+        assert_eq!(left(&docker), vec!["launcher"]);
+    }
+}
+
+/// Error wrappers retain the original cause for diagnostics and downcasting.
+#[test]
+fn launcher_errors_preserve_their_sources() {
+    use std::error::Error as _;
+
+    for error in [
+        LaunchError::Archive(io::Error::other("archive cause")),
+        LaunchError::Setup(io::Error::other("setup cause")),
+    ] {
+        assert!(
+            error
+                .source()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .is_some()
+        );
+    }
+    let error = LaunchError::LogStream(DockerError::Timeout);
+    assert_eq!(
+        error.source().unwrap().downcast_ref::<DockerError>(),
+        Some(&DockerError::Timeout)
+    );
+}
+
 /// A broken log stream while the daemon runs stops it and fails. Go: `TestRun_LogStreamLost`.
 #[tokio::test]
 async fn a_lost_log_stream_stops_the_daemon() {

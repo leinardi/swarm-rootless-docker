@@ -34,6 +34,7 @@
 mod tests;
 
 use std::fmt;
+use std::str::FromStr;
 
 use crate::spec::PREFIX;
 
@@ -239,6 +240,14 @@ impl InstanceName {
     }
 }
 
+impl FromStr for InstanceName {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for InstanceName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -307,6 +316,14 @@ impl IdRange {
     }
 }
 
+impl FromStr for IdRange {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for IdRange {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}:{}", self.start, self.count)
@@ -370,6 +387,14 @@ impl AbsolutePath {
     }
 }
 
+impl FromStr for AbsolutePath {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for AbsolutePath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -406,6 +431,14 @@ impl HostPath {
     }
 }
 
+impl FromStr for HostPath {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for HostPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
@@ -439,6 +472,14 @@ impl ContainerPath {
     #[must_use]
     pub fn path(&self) -> &AbsolutePath {
         &self.0
+    }
+}
+
+impl FromStr for ContainerPath {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
     }
 }
 
@@ -505,6 +546,14 @@ impl ExtraMount {
     }
 }
 
+impl FromStr for ExtraMount {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for ExtraMount {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mode = if self.read_only { "ro" } else { "rw" };
@@ -547,6 +596,14 @@ impl NetworkName {
     }
 }
 
+impl FromStr for NetworkName {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 impl fmt::Display for NetworkName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
@@ -586,6 +643,14 @@ impl NetworkAlias {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl FromStr for NetworkAlias {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
     }
 }
 
@@ -633,6 +698,14 @@ impl MemoryBytes {
     }
 }
 
+impl FromStr for MemoryBytes {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
+    }
+}
+
 /// The daemon container's pids limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PidsLimit(i64);
@@ -657,6 +730,14 @@ impl PidsLimit {
     #[must_use]
     pub fn get(self) -> i64 {
         self.0
+    }
+}
+
+impl FromStr for PidsLimit {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
     }
 }
 
@@ -701,6 +782,14 @@ impl NanoCpus {
     #[must_use]
     pub fn get(self) -> i64 {
         self.0
+    }
+}
+
+impl FromStr for NanoCpus {
+    type Err = ValueError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value)
     }
 }
 

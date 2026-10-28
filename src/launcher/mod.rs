@@ -92,9 +92,9 @@ pub enum LaunchError {
     #[error("the host-side probe failed: {0}")]
     Probe(String),
     #[error("build the subordinate ID files: {0}")]
-    Archive(io::Error),
+    Archive(#[source] io::Error),
     #[error("the daemon's log stream was lost while it ran: {0}")]
-    LogStream(DockerError),
+    LogStream(#[source] DockerError),
     #[error("the wait for the daemon's exit failed: {0}")]
     Wait(String),
     #[error("the daemon did not stop within {0:?}; it was removed by force")]
@@ -102,7 +102,7 @@ pub enum LaunchError {
     #[error("the daemon was not removed within {0:?}")]
     RemoveTimeout(Duration),
     #[error("set up the launcher: {0}")]
-    Setup(io::Error),
+    Setup(#[source] io::Error),
 }
 
 /// How long each phase may take. The defaults are the production values; tests shorten them.
@@ -535,7 +535,11 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
                     // Nobody can ask any more.
                     Err(_closed) => stoppable = false,
                 },
-                _ = health.tick() => self.check_health(daemon).await,
+                // Inspect is read-only: cancel it when exit, output failure or stop wins.
+                checked = async {
+                    health.tick().await;
+                    self.docker.inspect_container(daemon).await
+                } => self.publish_health(checked),
             }
         }
     }
@@ -559,10 +563,12 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
         wait: Option<ExitWait>,
         mut pump: Pump,
     ) -> Result<Option<i64>, LaunchError> {
+        let stop_deadline = Instant::now() + self.timing.stop;
+        let shutdown_deadline = stop_deadline + self.timing.finish;
         let _ = self.status.send(Status::Stopping);
         tracing::info!(daemon = short(daemon), "stopping the daemon");
         let stop_secs = i32::try_from(DAEMON_STOP_TIMEOUT_SECS).unwrap_or(i32::MAX);
-        let stopped = timeout_at(Instant::now() + self.timing.stop, async {
+        let stopped = timeout_at(stop_deadline, async {
             match self.docker.stop_container(daemon, stop_secs).await {
                 Ok(()) | Err(DockerError::NotFound) => {}
                 Err(
@@ -577,7 +583,8 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
             }
         })
         .await;
-        let deadline = Instant::now() + self.timing.finish;
+        // Scheduling delay after the stop must not stretch the shutdown budget.
+        let deadline = (Instant::now() + self.timing.finish).min(shutdown_deadline);
         let (removed, ()) = tokio::join!(self.remove_by(daemon, deadline), pump.drain(deadline));
         removed?;
         match stopped {
@@ -591,8 +598,8 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
         }
     }
 
-    async fn check_health(&self, daemon: &str) {
-        let health = match self.docker.inspect_container(daemon).await {
+    fn publish_health(&self, checked: Result<ContainerInfo, DockerError>) {
+        let health = match checked {
             Ok(info) => info.health,
             Err(error) => {
                 tracing::warn!(%error, "inspect the daemon's health");

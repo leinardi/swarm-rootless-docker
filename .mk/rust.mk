@@ -65,6 +65,10 @@ rust-fmt: ## Format the Rust code
 rust-fmt-check: ## Fail if the Rust code needs formatting
 	$(CARGO) fmt --all --check
 
+.PHONY: rust-doc
+rust-doc: ## Check Rust documentation, warnings as errors
+	RUSTDOCFLAGS="$(RUSTDOCFLAGS) -D warnings" $(CARGO) doc --workspace --all-features --no-deps --locked
+
 .PHONY: rust-deny
 rust-deny: ## Check Rust dependencies with cargo-deny (advisories, licences, bans, sources; network required)
 	$(CARGO) deny check
@@ -74,6 +78,6 @@ rust-run: ## Run the binary with the version strings set (ARGS="...")
 	$(RUST_VERSION_ENV) $(CARGO) run --locked -- $(ARGS)
 
 .PHONY: verify-rust
-verify-rust: rust-build rust-fmt-check rust-clippy rust-test ## Verify the Rust code (build, fmt, clippy, tests)
+verify-rust: rust-build rust-fmt-check rust-clippy rust-test rust-doc ## Verify the Rust code (build, fmt, clippy, tests, docs)
 
 endif  # MK_LOCAL_RUST_INCLUDED
