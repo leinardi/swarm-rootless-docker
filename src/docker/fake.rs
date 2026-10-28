@@ -133,6 +133,7 @@ struct State {
     /// `(op, target, error)`: the next call of `op` on `target` (an ID, a name, or `""` for any)
     /// fails with `error`, once.
     failures: Vec<(Op, String, DockerError)>,
+    inspect_gates: HashMap<String, Arc<Notify>>,
     next_id: u64,
 }
 
@@ -286,6 +287,11 @@ impl FakeDocker {
         self.state().failures.push((op, target.to_owned(), error));
     }
 
+    /// Holds inspect responses for `id` until `gate` is notified.
+    pub fn gate_inspect(&self, id: &str, gate: Arc<Notify>) {
+        self.state().inspect_gates.insert(id.to_owned(), gate);
+    }
+
     /// The containers now in the engine.
     #[must_use]
     pub fn containers(&self) -> Vec<Container> {
@@ -369,25 +375,32 @@ impl DockerApi for FakeDocker {
 
     async fn inspect_container(&self, id_or_name: &str) -> Result<ContainerInfo, DockerError> {
         tokio::task::yield_now().await;
-        let state = self.enter(
-            Call::Inspect(id_or_name.to_owned()),
-            Op::Inspect,
-            id_or_name,
-        )?;
-        let container = state
-            .containers
-            .iter()
-            .find(|container| container.id == id_or_name || container.name == id_or_name)
-            .ok_or(DockerError::NotFound)?;
-        Ok(ContainerInfo {
-            id: container.id.clone(),
-            name: container.name.clone(),
-            labels: container.labels.clone(),
-            running: (!container.no_state).then_some(container.status == Status::Running),
-            image: container.image.clone(),
-            health: container.health.clone(),
-            mounts: container.mounts.clone(),
-        })
+        let (info, gate) = {
+            let state = self.enter(
+                Call::Inspect(id_or_name.to_owned()),
+                Op::Inspect,
+                id_or_name,
+            )?;
+            let container = state
+                .containers
+                .iter()
+                .find(|container| container.id == id_or_name || container.name == id_or_name)
+                .ok_or(DockerError::NotFound)?;
+            let info = ContainerInfo {
+                id: container.id.clone(),
+                name: container.name.clone(),
+                labels: container.labels.clone(),
+                running: (!container.no_state).then_some(container.status == Status::Running),
+                image: container.image.clone(),
+                health: container.health.clone(),
+                mounts: container.mounts.clone(),
+            };
+            (info, state.inspect_gates.get(id_or_name).cloned())
+        };
+        if let Some(gate) = gate {
+            gate.notified().await;
+        }
+        Ok(info)
     }
 
     async fn create_container(&self, spec: &ContainerSpec) -> Result<String, DockerError> {

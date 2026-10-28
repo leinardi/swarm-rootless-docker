@@ -62,7 +62,8 @@ a TCP listener.
 8. **Supervise.** Until one of: the daemon exits (the launcher exits with its code, never mapping a
    failure to 0), the log stream fails (stop, exit 1), or a stop signal arrives. Every 10 s the
    daemon's health is inspected and published on the status socket that the image's healthcheck
-   asks.
+   asks. A pending health inspection is cancelled when the daemon exits, its log stream fails, or
+   a stop signal arrives; it never delays shutdown.
 9. **Stop.** One budget of 30 s in two parts: 20 s for the stop by ID (dockerd's 15 s to stop its
    own containers, then the kill) and the exit report, then 10 s in which the removal and the log
    drain run together, so a slow drain cannot use up the removal's time.

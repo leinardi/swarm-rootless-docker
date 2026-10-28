@@ -70,6 +70,37 @@ fn instance_names() {
     }
 }
 
+/// Standard parsing uses the same validation and errors as the named constructors.
+#[test]
+fn standard_parsing_preserves_validation() {
+    fn check<Value>(parse: impl Fn(&str) -> Result<Value, ValueError>, cases: &[&str])
+    where
+        Value: std::str::FromStr<Err = ValueError> + std::fmt::Debug + PartialEq,
+    {
+        for value in cases {
+            assert_eq!(value.parse::<Value>(), parse(value), "input {value:?}");
+        }
+    }
+
+    check(InstanceName::parse, &["herdquay", "", "Upper"]);
+    check(
+        IdRange::parse,
+        &["100000:65536", "0:65536", "4294967295:65536"],
+    );
+    check(AbsolutePath::parse, &["/", "/mnt/pool", "/mnt/../etc", ""]);
+    check(HostPath::parse, &["/mnt/pool", "/etc", "/", "relative"]);
+    check(ContainerPath::parse, &["/workspace", "/home/rootless", "/"]);
+    check(
+        ExtraMount::parse,
+        &["/mnt/work:/work:ro", "/etc:/work", "bad"],
+    );
+    check(NetworkName::parse, &["docker", "host", "container:abc", ""]);
+    check(NetworkAlias::parse, &["docker", "Upper", ""]);
+    check(MemoryBytes::parse, &["1g", "0", "18446744073709551615g"]);
+    check(PidsLimit::parse, &["1024", "0", "4194305"]);
+    check(NanoCpus::parse, &["1.5", "0", "1025", "1.0000000001"]);
+}
+
 #[test]
 fn ranges() {
     let range = IdRange::parse("100000:65536").unwrap();

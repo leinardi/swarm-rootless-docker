@@ -104,7 +104,7 @@ pub fn bind(path: &Path) -> io::Result<UnixListener> {
 }
 
 /// Answers every connection with the current status line, until the task is dropped. A client
-/// that does not read is given up after [`ANSWER_TIMEOUT`].
+/// that does not read is given up after `ANSWER_TIMEOUT` (one second).
 pub async fn serve(listener: UnixListener, status: watch::Receiver<Status>) {
     loop {
         let Ok((mut stream, _)) = listener.accept().await else {
