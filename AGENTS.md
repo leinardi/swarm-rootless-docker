@@ -146,7 +146,7 @@ Run before considering an edit done. `make check` applies to every row.
 
 ## Rust coding rules
 
-These are written out in full in `.agents/skills/rust-style-guide/SKILL.md`. The lints live once,
+Use the maintainer's user-level Rust skills for general coding guidance. The lints live once,
 in `[workspace.lints]` of the root `Cargo.toml`, with their settings in `clippy.toml`; every member
 declares `[lints] workspace = true`, and every lint and test command runs workspace-wide. In short:
 
@@ -215,7 +215,6 @@ not a past one.
 Skills live in `.agents/skills/` (symlinked as `.claude/skills`). Load them before the work, not
 after review:
 
-- `rust-style-guide` — before any `.rs` edit.
 - `adversarial-review` — for any review request ("review my diff", "is this ready to merge").
 
 ## Commit messages

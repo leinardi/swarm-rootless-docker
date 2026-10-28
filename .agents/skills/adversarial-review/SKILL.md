@@ -3,7 +3,7 @@ name: adversarial-review
 description: >
   Adversarial code review of changes to swarm-rootless-docker — working tree, staged diff, a
   branch vs main, a commit range, or a PR — in any language (Rust, bash, Dockerfile, Makefile,
-  YAML, docs). Loads rust-style-guide for Rust paths, hunts for real defects and for anything
+  YAML, docs). Uses user-level Rust skills for Rust paths, hunts for real defects and for anything
   that widens the daemon container's fixed security profile, lets the launcher touch a container
   it does not own, races the node lock, trusts a lexical path check as a boundary, or ships the
   wrong image or release, then reports ranked findings with a verdict. Use when the user asks to
@@ -23,7 +23,7 @@ Copy this checklist and tick items as you go:
 ```text
 Review progress:
 - [ ] 1. Diff and intent established (default scope if none given)
-- [ ] 2. AGENTS.md and the contracts it names read; `rust-style-guide` loaded for Rust paths
+- [ ] 2. AGENTS.md and its contracts read; user-level Rust skills consulted for Rust paths
 - [ ] 3. Repository invariants checked
 - [ ] 4. Adversarial passes run
 - [ ] 5. Findings confirmed or dropped; gates run
@@ -53,7 +53,7 @@ Read `AGENTS.md` first: its conventions are the review checklist's floor, and `R
 `SECURITY.md` are the user-facing contract a change must keep true.
 
 For any `**/*.rs` path (and `Cargo.toml`, `clippy.toml`, `rustfmt.toml`, `deny.toml`), load
-`rust-style-guide` before judging it; its rules are findings even when clippy is green. Every
+user-level Rust skills before judging it; project rules are findings even when clippy is green. Every
 other path gets the passes in §4 and the invariants in §3 with the same rigor.
 
 ## 3. Repository invariants — check on every review
