@@ -5,6 +5,10 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    # Wait a week after a release before proposing it (GitHub's default is
+    # 3 days), so a broken or compromised release has time to be yanked.
+    cooldown:
+      default-days: 7
     labels: ["dependencies", "ci"]
     commit-message:
       prefix: "chore(deps)"
@@ -17,6 +21,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     labels: ["dependencies", "ci"]
     commit-message:
       prefix: "chore(deps)"
@@ -36,6 +42,8 @@ updates:
     directory: "/deployments/docker"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: "feat(deps)"
     labels: ["dependencies", "docker"]
@@ -52,6 +60,8 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    cooldown:
+      default-days: 7
     # fix, not chore: the release version is derived from commit types, so a
     # crate bump (security fixes included) produces a patch release of the
     # image. Dev-dependencies never reach the binary, so their bumps are
