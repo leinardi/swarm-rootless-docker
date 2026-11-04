@@ -31,10 +31,10 @@ MK_COMMON_VERSION ?= v1
 MK_COMMON_DIR := $(REPO_ROOT)/.mk
 
 # Shared snippets coming from make-common
-MK_COMMON_FILES := help.mk pre-commit.mk password.mk
+MK_COMMON_FILES := help.mk pre-commit.mk password.mk rust.mk
 
 # Repo-local snippets that are NOT in make-common
-MK_LOCAL_FILES := audit-deps.mk verify.mk rust.mk image.mk
+MK_LOCAL_FILES := audit-deps.mk verify.mk image.mk
 
 MK_COMMON_BOOTSTRAP_SCRIPT := $(REPO_ROOT)/scripts/bootstrap-mk-common.sh
 
@@ -52,6 +52,13 @@ BIN_NAME ?= swarm-rootless-docker
 
 # Arguments for `make rust-run`
 ARGS ?= --version
+
+# rust.mk: src/version.rs reads SWARM_ROOTLESS_DOCKER_VERSION/_COMMIT/_DATE at compile time. The
+# packages define no [features], so the default RUST_FEATURES (--all-features) builds what the
+# default features build. cargo-deny keeps its old scope, the root package's graph: --workspace
+# would add the meta crate's.
+RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER
+RUST_DENY_ARGS    :=
 
 # -----------------------------------------------------------------------------
 # Include shared make logic (fetched from make-common)
