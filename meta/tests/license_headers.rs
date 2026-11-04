@@ -113,7 +113,7 @@ fn scratch_repo(files: &BTreeMap<&str, String>) -> tempfile::TempDir {
     files.insert(SCRIPT_PATH, repo::read(SCRIPT_PATH));
     files
         .entry("Makefile")
-        .or_insert_with(|| hash_header() + "\nMK_COMMON_FILES := docker.mk help.mk\n");
+        .or_insert_with(|| hash_header() + "\nMK_COMMON_FILES := docker.mk help.mk rust.mk\n");
 
     for (name, content) in &files {
         let path = directory.join(name);
@@ -250,6 +250,7 @@ fn header_cases_for_each_file_kind() {
         "# syntax=docker/dockerfile:1.7\n\n{}FROM scratch\n",
         hash_header()
     );
+    let unlisted_rust = hash_header() + "\nMK_COMMON_FILES := docker.mk help.mk\n";
     run_cases(vec![
         case(
             "shell script with the header",
@@ -277,8 +278,8 @@ fn header_cases_for_each_file_kind() {
             false,
         ),
         case(
-            "rust make fragment, no header",
-            &[(".mk/rust.mk", "x:\n")],
+            "make-common name the Makefile does not list, no header",
+            &[(".mk/rust.mk", "x:\n"), ("Makefile", &unlisted_rust)],
             false,
         ),
         case(
@@ -301,7 +302,11 @@ fn header_cases_for_the_exemptions() {
         ),
         case(
             "upstream make fragment",
-            &[(".mk/docker.mk", "x:\n"), (".mk/help.mk", "y:\n")],
+            &[
+                (".mk/docker.mk", "x:\n"),
+                (".mk/help.mk", "y:\n"),
+                (".mk/rust.mk", "z:\n"),
+            ],
             true,
         ),
         case(

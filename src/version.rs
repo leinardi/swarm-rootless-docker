@@ -23,8 +23,8 @@
  */
 
 //! The build's version strings, set at compile time through `SWARM_ROOTLESS_DOCKER_VERSION`,
-//! `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` (`make rust-run` and the image
-//! build pass them), and logged once at startup.
+//! `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` (`make rust-build`,
+//! `make rust-run` and the image build pass them), and logged once at startup.
 
 /// The release version, `dev` for a local build.
 pub const VERSION: &str = match option_env!("SWARM_ROOTLESS_DOCKER_VERSION") {

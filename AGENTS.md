@@ -18,14 +18,14 @@ recovery, [`docs/testing.md`](docs/testing.md) the test layers.
 ## Common commands
 
 ```bash
-make rust-build    # cargo build --workspace --all-targets --locked
+make rust-build    # cargo build --workspace --all-targets --all-features --locked, version stamped
 make rust-test     # cargo test --workspace --locked (the meta-tests in meta/ included)
 make rust-fmt      # cargo fmt --all; rust-fmt-check only checks
-make rust-clippy   # cargo clippy --workspace --all-targets --locked -- -D warnings
+make rust-clippy   # cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 make verify        # verify-rust: rust-build, rust-fmt-check, rust-clippy, rust-test and rust-doc
 make rust-doc      # cargo doc --workspace --all-features --no-deps --locked, warnings as errors
 make rust-run ARGS="--version"   # run with SWARM_ROOTLESS_DOCKER_VERSION/_COMMIT/_DATE set from git
-make rust-deny     # cargo deny check: advisories, licences, bans, sources (network required)
+make rust-deny     # cargo deny check (root package): advisories, licences, bans, sources (network)
 make audit-deps    # cargo deny check advisories (network required)
 make check         # pre-commit on all files: rustfmt, clippy, tests, droast, dclint, linters
 make check-stage   # pre-commit on the staging area only
@@ -42,9 +42,10 @@ cargo test --locked -p meta --test docs
 ```
 
 The Makefile pulls shared snippets from `leinardi/make-common@v1` into `.mk/` on first run. To
-refresh: `make mk-common-update`. Project targets live in the local `.mk/*.mk` files listed in
-`MK_LOCAL_FILES` (`rust.mk`, `verify.mk`, `audit-deps.mk`, `image.mk`), never as recipes in the
-Makefile.
+refresh: `make mk-common-update`. The Rust targets are make-common's `rust.mk`, set up in the
+Makefile's project config (`RUST_STAMP_PREFIX`, `RUST_DENY_ARGS`). Project targets live in the
+local `.mk/*.mk` files listed in `MK_LOCAL_FILES` (`verify.mk`, `audit-deps.mk`, `image.mk`),
+never as recipes in the Makefile.
 
 The image and its integration tests:
 
@@ -115,7 +116,7 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 
 ### Generated or vendored: never hand-edit
 
-- `.mk/{help,password,pre-commit}.mk`, `.mk/.mk-common-version` and
+- `.mk/{help,password,pre-commit,rust}.mk`, `.mk/.mk-common-version` and
   `scripts/bootstrap-mk-common.sh`: fetched from make-common; refresh them with
   `make mk-common-update`, and port a change upstream.
 - `.suppressions-baseline`: written by `scripts/check-suppressions.sh --update`.
@@ -178,7 +179,8 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
 - **Version strings:** `src/version.rs` reads `SWARM_ROOTLESS_DOCKER_VERSION`,
   `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` at compile time (`option_env!`),
   falling back to `dev`, `none` and `unknown`. `make rust-run` sets them from git
-  (`RUST_VERSION_ENV` in `.mk/rust.mk`).
+  (make-common's `.mk/rust.mk`, with `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER` in the
+  Makefile), and so does `make rust-build`.
 - Every Rust and shell file, the Makefile and the repo-local `.mk` fragments carry the MIT license
   header, with the year of the file's first commit (copy it from any Rust or shell file, or use the
   IntelliJ MIT copyright profile in `.idea/copyright/`). The `check-license-headers` pre-commit hook
