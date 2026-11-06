@@ -223,10 +223,15 @@ fn build_problems(content: &str) -> Vec<Problem> {
 
 /// The stamps of `content`, against src/version.rs, the Makefile and make-common's rust.mk.
 fn stamp_problems(content: &str) -> Vec<Problem> {
+    stamp_problems_with(content, &meta::repo().read(STAMPS.version_file))
+}
+
+/// [`stamp_problems`], against the version module `version_rs`.
+fn stamp_problems_with(content: &str, version_rs: &str) -> Vec<Problem> {
     let repo = meta::repo();
     let build = stage_of(content, "build");
     STAMPS.problems(&StampSources {
-        version_rs: &repo.read("src/version.rs"),
+        version_rs,
         build: &build,
         makefile: &repo.read("Makefile"),
         rust_mk: &repo.read(".mk/rust.mk"),
@@ -338,8 +343,8 @@ fn build_stage() {
 
 /// The version, commit and date the binary reports come from the build: the build stage (in the
 /// RUN that runs cargo zigbuild) and the make targets set the three variables src/version.rs
-/// reads at compile time, from the same build arguments and git values. A path that stamped
-/// nothing would ship a binary reporting "dev".
+/// reads at compile time (service-kit's `buildinfo!`), from the same build arguments and git
+/// values. A path that stamped nothing would ship a binary reporting "dev".
 #[test]
 fn version_is_stamped() {
     let problems = stamp_problems(&shipped());
@@ -458,6 +463,49 @@ fn build_rules_refuse_altered_dockerfiles() {
         strings(&stamp_problems(&unstamped)),
         ["the RUN that runs cargo zigbuild does not stamp SWARM_ROOTLESS_DOCKER_DATE from $DATE"]
     );
+}
+
+/// The negative control of the stamp reads, on altered copies of the real src/version.rs: its
+/// `buildinfo!` under another prefix, the call commented out, and a `buildinfo!` that is not
+/// service-kit's each read none of the three stamps.
+#[test]
+fn stamp_rules_refuse_altered_version_modules() {
+    let shipped = shipped();
+    let version_rs = meta::repo().read(STAMPS.version_file);
+    let altered = |from: &str, to: &str| {
+        let altered = version_rs.replacen(from, to, 1);
+        assert_ne!(
+            altered, version_rs,
+            "the alteration {from:?} changed nothing"
+        );
+        altered
+    };
+    let unread =
+        |field: &str| format!("src/version.rs does not read SWARM_ROOTLESS_DOCKER_{field}");
+    let want = [unread("VERSION"), unread("COMMIT"), unread("DATE")];
+    for (name, broken) in [
+        (
+            "another prefix",
+            altered("\x22SWARM_ROOTLESS_DOCKER\x22,", "\x22SWARM_ROOTLESS\x22,"),
+        ),
+        (
+            "the call commented out",
+            altered("pub const BUILD", "// pub const BUILD"),
+        ),
+        (
+            "a buildinfo! that is not service-kit's",
+            altered(
+                "use service_kit::{BuildInfo, Defaults, EmptyStamp, buildinfo};",
+                "use service_kit::{BuildInfo, Defaults, EmptyStamp};",
+            ),
+        ),
+    ] {
+        assert_eq!(
+            strings(&stamp_problems_with(&shipped, &broken)),
+            want,
+            "{name} was accepted"
+        );
+    }
 }
 
 /// The negative control of the runtime and label rules, on altered copies of the shipped

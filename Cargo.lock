@@ -948,6 +948,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-kit"
+version = "0.1.0"
+source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1011,6 +1016,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "service-kit",
  "tar",
  "thiserror",
  "tokio",

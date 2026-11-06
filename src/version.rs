@@ -24,29 +24,31 @@
 
 //! The build's version strings, set at compile time through `SWARM_ROOTLESS_DOCKER_VERSION`,
 //! `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` (`make rust-build`,
-//! `make rust-run` and the image build pass them), and logged once at startup.
+//! `make rust-run` and the image build pass them), and logged once at startup. service-kit's
+//! `buildinfo!` reads them; the defaults and the empty-stamp rule are this program's.
 
-/// The release version, `dev` for a local build.
-pub const VERSION: &str = match option_env!("SWARM_ROOTLESS_DOCKER_VERSION") {
-    Some(version) => version,
-    None => "dev",
-};
+use service_kit::{BuildInfo, Defaults, EmptyStamp, buildinfo};
 
-/// The commit built, `none` when unknown.
-pub const COMMIT: &str = match option_env!("SWARM_ROOTLESS_DOCKER_COMMIT") {
-    Some(commit) => commit,
-    None => "none",
-};
-
-/// The build date, `unknown` when unknown.
-pub const DATE: &str = match option_env!("SWARM_ROOTLESS_DOCKER_DATE") {
-    Some(date) => date,
-    None => "unknown",
-};
+/// The version (`dev` for a local build), the commit (`none` when unknown) and the build date
+/// (`unknown` when unknown). A variable set to the empty string stamps the empty string.
+pub const BUILD: BuildInfo = buildinfo!(
+    "SWARM_ROOTLESS_DOCKER",
+    Defaults {
+        version: "dev",
+        commit: "none",
+        date: "unknown",
+        empty: EmptyStamp::Kept,
+    },
+);
 
 /// The version line, without the program name: `VERSION (COMMIT, DATE)`. `--version` prints it
 /// after the name.
 #[must_use]
 pub fn long() -> String {
-    format!("{VERSION} ({COMMIT}, {DATE})")
+    let BuildInfo {
+        version,
+        commit,
+        date,
+    } = BUILD;
+    format!("{version} ({commit}, {date})")
 }
