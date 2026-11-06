@@ -18,7 +18,7 @@ recovery, [`docs/testing.md`](docs/testing.md) the test layers.
 ## Common commands
 
 ```bash
-make rust-build    # cargo build --workspace --all-targets --all-features --locked, version stamped
+make rust-build    # cargo build --workspace --all-targets --all-features --locked, unstamped
 make rust-test     # cargo test --workspace --locked (the meta-tests in meta/ included)
 make rust-fmt      # cargo fmt --all; rust-fmt-check only checks
 make rust-clippy   # cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
@@ -128,16 +128,16 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 (the logger's subscriber, written to its `Lane`; the root `[dev-dependencies]` add its `testing`
 feature for the logger tests' `Capture`) and `service-kit` (`buildinfo!` only, no features) come
 from [leinardi/rust-common](https://github.com/leinardi/rust-common), a git
-dependency pinned by release tag (`tag = "v0.2.1"`) in the root `Cargo.toml`'s
-`[workspace.dependencies]`, with `version = "0.2"`, the tag's `<major>.<minor>`.
+dependency pinned by release tag (`tag = "v0.3.0"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`, with `version = "0.3"`, the tag's `<major>.<minor>`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
   by moving the `tag`.
 - **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
-  they agree), and `version` with it when the tag's `<major>.<minor>` moves (a `v0.3.0` checkout
-  does not resolve against `version = "0.2"`; a `v0.2.x` one does), then run `cargo fetch` before
+  they agree), and `version` with it when the tag's `<major>.<minor>` moves (a `v0.4.0` checkout
+  does not resolve against `version = "0.3"`; a `v0.3.x` one does), then run `cargo fetch` before
   the `--locked` make targets, which otherwise refuse the stale lock. The manifest change is what
   makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
   `cargo update -p <crate>` can also move unrelated edges.
@@ -221,9 +221,11 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
 - **Version strings:** `src/version.rs` reads `SWARM_ROOTLESS_DOCKER_VERSION`,
   `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` at compile time (service-kit's
   `buildinfo!`), falling back to `dev`, `none` and `unknown`; an empty variable stamps the empty
-  string, and `long()` formats the version line here. `make rust-run` sets them from git
-  (make-common's `.mk/rust.mk`, with `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER` in the
-  Makefile), and so does `make rust-build`.
+  string, and `long()` formats the version line here. `make rust-run` sets them from git, the
+  date from HEAD's commit (make-common's `.mk/rust.mk`, with
+  `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER` and `BUILD_DATE` in the Makefile), and so do
+  `make rust-dist` and `make image-build-prebuilt`; `make rust-build` builds unstamped, as the
+  tests do (`RUST_BUILD_ENV :=`).
 - Every Rust and shell file, the Makefile and the repo-local `.mk` fragments carry the MIT license
   header, with the year of the file's first commit (copy it from any Rust or shell file, or use the
   IntelliJ MIT copyright profile in `.idea/copyright/`). The `check-license-headers` pre-commit hook
