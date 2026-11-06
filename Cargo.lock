@@ -1015,6 +1015,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-setup",
  "tracing-subscriber",
 ]
 
@@ -1237,6 +1238,16 @@ checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
 dependencies = [
  "serde",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-setup"
+version = "0.1.0"
+source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+dependencies = [
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

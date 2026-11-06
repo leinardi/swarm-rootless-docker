@@ -60,6 +60,9 @@ publish = false
 workspace = true
 
 [dependencies]
+# The logger's subscriber: tracing-subscriber's text or flat JSON, no ANSI, UTC timestamps, the
+# target and the JSON span fields shown (rust-common); the writer (a Lane) and the flags are here.
+tracing-setup.workspace = true
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "string"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
@@ -70,9 +73,12 @@ tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "net", "io-util", "signal"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "std"] }
+# MakeWriter, the bound of the logger's writer (output.rs's Lane).
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
 [dev-dependencies]
+# Capture, the writer the logger's unit tests log into.
+tracing-setup = { workspace = true, features = ["testing"] }
 base64 = "0.23.1"
 tokio = { version = "1.54.1", default-features = false, features = ["test-util", "net", "io-util", "rt-multi-thread"] }
 
