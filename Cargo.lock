@@ -338,14 +338,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "go-compat"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
-dependencies = [
- "jiff",
-]
-
-[[package]]
 name = "granit-parser"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -816,9 +808,8 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "repo-meta"
 version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+source = "git+https://github.com/leinardi/rust-common?rev=2179ec42584417bcea437b90b168f632890babe6#2179ec42584417bcea437b90b168f632890babe6"
 dependencies = [
- "go-compat",
  "regex",
  "serde-saphyr",
  "serde_json",
@@ -950,7 +941,7 @@ dependencies = [
 [[package]]
 name = "service-kit"
 version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+source = "git+https://github.com/leinardi/rust-common?rev=2179ec42584417bcea437b90b168f632890babe6#2179ec42584417bcea437b90b168f632890babe6"
 
 [[package]]
 name = "sharded-slab"
@@ -1084,9 +1075,8 @@ dependencies = [
 [[package]]
 name = "testenv-core"
 version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+source = "git+https://github.com/leinardi/rust-common?rev=2179ec42584417bcea437b90b168f632890babe6#2179ec42584417bcea437b90b168f632890babe6"
 dependencies = [
- "go-compat",
  "jiff",
  "regex",
 ]
@@ -1249,7 +1239,7 @@ dependencies = [
 [[package]]
 name = "tracing-setup"
 version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+source = "git+https://github.com/leinardi/rust-common?rev=2179ec42584417bcea437b90b168f632890babe6#2179ec42584417bcea437b90b168f632890babe6"
 dependencies = [
  "serde_json",
  "tracing",
