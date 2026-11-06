@@ -23,7 +23,7 @@
  */
 
 //! The build's version strings, set at compile time through `SWARM_ROOTLESS_DOCKER_VERSION`,
-//! `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` (`make rust-build`,
+//! `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` (`make rust-dist`,
 //! `make rust-run` and the image build pass them), and logged once at startup. service-kit's
 //! `buildinfo!` reads them; the defaults and the empty-stamp rule are this program's.
 

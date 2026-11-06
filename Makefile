@@ -60,6 +60,17 @@ ARGS ?= --version
 RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER
 RUST_DENY_ARGS    :=
 
+# The date stamp is HEAD's commit date in UTC (rust.mk's GIT_COMMIT_DATE, the clock's only
+# outside git), the date release.yaml stamps. A stamp that moves only with a commit keeps a
+# repeated build a cache hit: a new date on every make would recompile the crate that reads it
+# each time.
+BUILD_DATE ?= $(or $(GIT_COMMIT_DATE),$(shell date -u +"%Y-%m-%dT%H:%M:%SZ"))
+
+# rust-build unstamped, as rust-test builds: the two share the swarm-rootless-docker crate's
+# units instead of each recompiling it after the other. rust-dist, rust-run and the image builds
+# stay stamped.
+RUST_BUILD_ENV :=
+
 # -----------------------------------------------------------------------------
 # Include shared make logic (fetched from make-common)
 # -----------------------------------------------------------------------------
