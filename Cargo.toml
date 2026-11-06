@@ -91,6 +91,14 @@ codegen-units = 1
 strip = true
 panic = "abort"
 
+# Line tables only for the workspace and no debug info for the dependencies: backtraces keep
+# their files and lines, and the debug and test binaries shrink to a fraction of their size.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # The meta-tests scan the tree with regexes; unoptimised, regex compilation and matching dominate
 # their run time. Only the regex crates are optimised in dev and test builds, which costs a few
 # seconds on a clean build and nothing on an incremental one; the workspace's own code stays at
