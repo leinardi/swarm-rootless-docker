@@ -37,7 +37,7 @@ mod tests;
 use std::collections::HashMap;
 use std::io;
 
-use bollard::models::{
+use docker_client::bollard::models::{
     ContainerCreateBody, DeviceMapping, EndpointSettings, HealthConfig, HostConfig,
     HostConfigCgroupnsModeEnum, HostConfigLogConfig, Mount, MountBindOptions,
     MountBindOptionsPropagationEnum, MountTmpfsOptions, MountType, NetworkingConfig, RestartPolicy,

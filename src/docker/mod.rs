@@ -37,15 +37,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
-use bollard::container::LogOutput;
-use bollard::errors::Error as BollardError;
-use bollard::models::ContainerInspectResponse;
-use bollard::query_parameters::{
-    AttachContainerOptionsBuilder, CreateContainerOptionsBuilder, ListContainersOptionsBuilder,
-    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
-    WaitContainerOptionsBuilder,
+use docker_client::attach::{self, WaitCondition};
+use docker_client::bollard::models::ContainerInspectResponse;
+use docker_client::bollard::query_parameters::{
+    CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
+    StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
-use futures_util::StreamExt as _;
+use docker_client::{CancellationToken, Config, ErrorKind, bounded};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::spec::ContainerSpec;
@@ -71,6 +69,17 @@ pub enum DockerError {
     Timeout,
     #[error("{0}")]
     Other(String),
+}
+
+impl From<docker_client::Error> for DockerError {
+    fn from(error: docker_client::Error) -> Self {
+        match error.kind() {
+            ErrorKind::NotFound => Self::NotFound,
+            ErrorKind::Conflict => Self::Conflict(error.to_string()),
+            ErrorKind::Timeout => Self::Timeout,
+            ErrorKind::Unavailable | ErrorKind::Other => Self::Other(error.to_string()),
+        }
+    }
 }
 
 /// A container from a list call.
@@ -202,14 +211,14 @@ pub trait DockerApi: Sync {
     ) -> impl Future<Output = Result<(), DockerError>> + Send;
 }
 
-/// The host socket, through bollard.
+/// The host socket, through bollard (by way of rust-common's `docker-client`).
 ///
 /// bollard's own timeout only covers the wait for the response headers; a body that stalls after
 /// them would hang the call, and under the node lock every launcher on the node. So every call is
 /// bounded as a whole.
 #[derive(Debug, Clone)]
 pub struct Bollard {
-    client: bollard::Docker,
+    client: docker_client::bollard::Docker,
     timeout: Duration,
 }
 
@@ -230,15 +239,15 @@ impl Bollard {
     ///
     /// [`DockerError::Other`] when the client cannot be built.
     pub fn with_timeout(path: &str, timeout: Duration) -> Result<Self, DockerError> {
-        let header_secs = timeout.as_secs().max(1);
-        bollard::Docker::connect_with_unix(path, header_secs, bollard::API_DEFAULT_VERSION)
+        let config = Config::unix(path).response_header_timeout(timeout);
+        docker_client::connect(config)
             .map(|client| Self { client, timeout })
             .map_err(|error| DockerError::Other(error.to_string()))
     }
 
     async fn bounded<T>(
         &self,
-        call: impl Future<Output = Result<T, BollardError>>,
+        call: impl Future<Output = Result<T, docker_client::bollard::errors::Error>>,
     ) -> Result<T, DockerError> {
         self.bounded_by(self.timeout, call).await
     }
@@ -246,12 +255,11 @@ impl Bollard {
     async fn bounded_by<T>(
         &self,
         timeout: Duration,
-        call: impl Future<Output = Result<T, BollardError>>,
+        call: impl Future<Output = Result<T, docker_client::bollard::errors::Error>>,
     ) -> Result<T, DockerError> {
-        match tokio::time::timeout(timeout, call).await {
-            Ok(result) => result.map_err(|error| docker_error(&error)),
-            Err(_elapsed) => Err(DockerError::Timeout),
-        }
+        // Boxed: the engine call's future is large, and every method here awaits one, which put
+        // the launcher's whole future over clippy's `large_futures` limit.
+        Ok(Box::pin(bounded(timeout, call)).await?)
     }
 }
 
@@ -350,32 +358,31 @@ impl DockerApi for Bollard {
         self.bounded(self.client.upload_to_container(
             id,
             Some(options),
-            bollard::body_full(archive.into()),
+            docker_client::bollard::body_full(archive.into()),
         ))
         .await
     }
 
     async fn attach(&self, id: &str) -> Result<OutputStream, DockerError> {
-        let options = AttachContainerOptionsBuilder::new()
-            .stream(true)
-            .stdout(true)
-            .stderr(true)
-            .build();
-        let mut attached = self
-            .bounded(self.client.attach_container(id, Some(options)))
-            .await?
-            .output;
+        // The pump's task ends with its receiver, and so does the one below that maps its errors;
+        // nothing cancels it otherwise.
+        let mut attached = attach::attach(
+            &self.client,
+            id,
+            self.timeout,
+            OUTPUT_BUFFER,
+            CancellationToken::new(),
+        )
+        .await?;
         let (sender, receiver) = mpsc::channel(OUTPUT_BUFFER);
         tokio::spawn(async move {
-            while let Some(item) = attached.next().await {
+            while let Some(item) = attached.recv().await {
                 let output = item
                     .map(|output| match output {
-                        LogOutput::StdErr { message } => Output::Stderr(message.to_vec()),
-                        LogOutput::StdOut { message }
-                        | LogOutput::Console { message }
-                        | LogOutput::StdIn { message } => Output::Stdout(message.to_vec()),
+                        attach::Output::Stdout(message) => Output::Stdout(message),
+                        attach::Output::Stderr(message) => Output::Stderr(message),
                     })
-                    .map_err(|error| docker_error(&error));
+                    .map_err(DockerError::from);
                 if sender.send(output).await.is_err() {
                     break;
                 }
@@ -387,20 +394,24 @@ impl DockerApi for Bollard {
     // Nothing to await here: the request goes out from the spawned task. The condition answers
     // for a container that already stopped, so the late request loses nothing.
     fn wait(&self, id: &str) -> impl Future<Output = Result<ExitWait, DockerError>> + Send {
-        let options = WaitContainerOptionsBuilder::new()
-            .condition("not-running")
-            .build();
-        let mut stream = Box::pin(self.client.wait_container(id, Some(options)));
-        let (sender, receiver) = oneshot::channel();
+        let mut exit = attach::wait(
+            &self.client,
+            id,
+            WaitCondition::NotRunning,
+            CancellationToken::new(),
+        );
+        let (mut sender, receiver) = oneshot::channel();
         tokio::spawn(async move {
-            let result = match stream.next().await {
-                Some(Ok(response)) => Ok(response.status_code),
-                // bollard reports a non-zero exit as an error carrying the code.
-                Some(Err(BollardError::DockerContainerWaitError { code, .. })) => Ok(code),
-                Some(Err(error)) => Err(docker_error(&error)),
-                None => Err(DockerError::Other("the wait stream ended empty".to_owned())),
+            // Dropping the answer's receiver drops `exit`, which ends the wait's own task.
+            let result = tokio::select! {
+                biased;
+                () = sender.closed() => return,
+                result = &mut exit => result,
             };
-            let _ = sender.send(result);
+            let _ = sender.send(match result {
+                Ok(code) => code.map_err(DockerError::from),
+                Err(_closed) => Err(DockerError::Other("the wait ended empty".to_owned())),
+            });
         });
         std::future::ready(Ok(receiver))
     }
@@ -450,21 +461,6 @@ fn container_info(response: ContainerInspectResponse) -> Result<ContainerInfo, D
             })
             .collect(),
     })
-}
-
-fn docker_error(error: &BollardError) -> DockerError {
-    if let BollardError::DockerResponseServerError {
-        status_code,
-        message,
-    } = error
-    {
-        match status_code {
-            404 => return DockerError::NotFound,
-            409 => return DockerError::Conflict(message.clone()),
-            _ => {}
-        }
-    }
-    DockerError::Other(error.to_string())
 }
 
 fn missing(what: &str) -> DockerError {

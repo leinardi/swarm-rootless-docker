@@ -212,6 +212,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "docker-client"
+version = "0.3.0"
+source = "git+https://github.com/leinardi/rust-common?rev=2179ec42584417bcea437b90b168f632890babe6#2179ec42584417bcea437b90b168f632890babe6"
+dependencies = [
+ "bollard",
+ "futures-util",
+ "http",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,9 +1014,8 @@ name = "swarm-rootless-docker"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "bollard",
  "clap",
- "futures-util",
+ "docker-client",
  "rustix",
  "serde",
  "serde_json",
