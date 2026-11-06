@@ -128,8 +128,8 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 (the logger's subscriber, written to its `Lane`; the root `[dev-dependencies]` add its `testing`
 feature for the logger tests' `Capture`) and `service-kit` (`buildinfo!` only, no features) come
 from [leinardi/rust-common](https://github.com/leinardi/rust-common), a git
-dependency pinned by release tag (`tag = "v0.2.0"`) in the root `Cargo.toml`'s
-`[workspace.dependencies]`; `version = "0.1"` tracks the crates' package version, not the tag.
+dependency pinned by release tag (`tag = "v0.2.1"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`, with `version = "0.2"`, the tag's `<major>.<minor>`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
