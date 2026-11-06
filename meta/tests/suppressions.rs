@@ -27,16 +27,21 @@
 //!
 //! Each case builds a scratch git repository and runs the script inside it, rather than against
 //! this repository: what is under test is the rule, not today's counts, and a case has to be able
-//! to add a suppression without that being a suppression anybody has to review.
+//! to add a suppression without that being a suppression anybody has to review. The harness is
+//! `repo_meta::scratch::SuppressionHarness`: git and the script run with an isolated git
+//! environment, and a refusal text that is blank is refused.
 
-use std::fs;
-use std::path::Path;
-use std::process::Command;
-
-use meta::{gitenv, repo};
+use repo_meta::report;
+use repo_meta::scratch::{RatchetCase, RatchetScratch, SuppressionHarness};
 
 /// The name the script looks for, relative to the repository it is run in.
 const BASELINE_FILE: &str = ".suppressions-baseline";
+
+/// The ratchet, run from this repository in each scratch repository.
+const HARNESS: SuppressionHarness<'static> = SuppressionHarness {
+    script: "scripts/check-suppressions.sh",
+    baseline: BASELINE_FILE,
+};
 
 /// The scratch Rust file every case edits.
 const SCRATCH: &str = "scratch.rs";
@@ -171,118 +176,16 @@ const RUST_WITH_MULTI_LINE_EXPECT_EXTENDED: &str = r#"#[expect(
 fn long() {}
 "#;
 
-/// A scratch repository, removed when dropped.
-struct Scratch(tempfile::TempDir);
-
-impl Scratch {
-    /// An empty git repository with an identity, so committing needs no global configuration.
-    fn new() -> Self {
-        let scratch =
-            Self(tempfile::tempdir().unwrap_or_else(|error| panic!("scratch directory: {error}")));
-        scratch.git(&["init", "-q", "-b", "main"]);
-        scratch.git(&["config", "user.email", "ratchet@example.invalid"]);
-        scratch.git(&["config", "user.name", "Ratchet Test"]);
-        scratch.git(&["config", "commit.gpgsign", "false"]);
-        scratch
-    }
-
-    fn path(&self) -> &Path {
-        self.0.path()
-    }
-
-    /// Writes one file, creating the directories above it.
-    fn write(&self, name: &str, content: &str) {
-        let path = self.path().join(name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .unwrap_or_else(|error| panic!("create the directory for {name}: {error}"));
-        }
-        fs::write(&path, content).unwrap_or_else(|error| panic!("write {name}: {error}"));
-    }
-
-    fn read(&self, name: &str) -> String {
-        fs::read_to_string(self.path().join(name))
-            .unwrap_or_else(|error| panic!("read {name}: {error}"))
-    }
-
-    /// Writes a baseline holding `lines`, plus the comment a real one has.
-    fn write_baseline(&self, lines: &str) {
-        let mut content = "# scratch baseline\n".to_owned();
-        if !lines.is_empty() {
-            content.push_str(lines);
-            content.push('\n');
-        }
-        self.write(BASELINE_FILE, &content);
-    }
-
-    /// Writes the scratch Rust file and a baseline, and commits both, leaving a clean index.
-    fn commit_initial(&self, source: &str, baseline: &str) {
-        self.write(SCRATCH, source);
-        self.write_baseline(baseline);
-        self.git(&["add", "-A"]);
-        self.git(&["commit", "-q", "-m", "scratch fixture"]);
-    }
-
-    fn git(&self, args: &[&str]) {
-        let output = gitenv::isolate(Command::new("git").args(args).current_dir(self.path()))
-            .output()
-            .unwrap_or_else(|error| panic!("run git {args:?}: {error}"));
-        assert!(
-            output.status.success(),
-            "git {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    /// Runs the ratchet here: whether it accepted the tree, and its combined output.
-    fn ratchet(&self, args: &[&str]) -> (bool, String) {
-        let output = gitenv::isolate(
-            Command::new(repo::path("scripts/check-suppressions.sh"))
-                .args(args)
-                .current_dir(self.path()),
-        )
-        .output()
-        .unwrap_or_else(|error| panic!("run the ratchet: {error}"));
-        let text = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        (output.status.success(), text)
-    }
+/// An empty scratch repository whose ratchet is this repository's.
+fn new_scratch() -> RatchetScratch {
+    HARNESS.scratch(&meta::repo())
 }
 
-/// A scratch state the ratchet must accept (`None`) or refuse naming the given complaint, so a
-/// case cannot pass on the wrong one.
-type Case = (&'static str, fn(&Scratch), Option<&'static str>);
-
-fn run_cases(cases: &[Case]) {
-    let mut failures = Vec::new();
-    for (name, set_up, refusal) in cases {
-        let scratch = Scratch::new();
-        set_up(&scratch);
-        let (accepted, output) = scratch.ratchet(&[]);
-        match refusal {
-            None if !accepted => {
-                failures.push(format!(
-                    "{name}: refused a tree it should accept:\n{output}"
-                ));
-            }
-            Some(_) if accepted => {
-                failures.push(format!(
-                    "{name}: accepted the tree, want a refusal:\n{output}"
-                ));
-            }
-            Some(message) if !output.contains(message) => {
-                failures.push(format!(
-                    "{name}: output does not mention {message:?}:\n{output}"
-                ));
-            }
-            None | Some(_) => {}
-        }
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
+/// Runs each case in a fresh scratch repository: the ratchet must accept it (`None`) or refuse it
+/// naming the given complaint, so a case cannot pass on the wrong one.
+fn run_cases(cases: &[RatchetCase]) {
+    let problems = HARNESS.run_cases(&meta::repo(), cases);
+    assert!(problems.is_empty(), "{}", report(&problems));
 }
 
 /// Go: `TestCheckSuppressions`, the staged-diff and count rules: each state the ratchet must
@@ -292,13 +195,15 @@ fn check_suppressions() {
     run_cases(&[
         (
             "a tree that matches its baseline passes",
-            |scratch| scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t1"),
+            |scratch| {
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
+            },
             None,
         ),
         (
             "an added suppression with an untouched baseline is refused",
             |scratch| {
-                scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
                 scratch.write(SCRATCH, RUST_WITH_TWO);
                 scratch.git(&["add", SCRATCH]);
             },
@@ -307,7 +212,7 @@ fn check_suppressions() {
         (
             "the same addition passes once the baseline is staged with it",
             |scratch| {
-                scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
                 scratch.write(SCRATCH, RUST_WITH_TWO);
                 scratch.write_baseline("expect/clippy::too_many_lines\t2");
                 scratch.git(&["add", SCRATCH, BASELINE_FILE]);
@@ -317,7 +222,7 @@ fn check_suppressions() {
         (
             "a suppression swapped one for one is refused even though the count holds",
             |scratch| {
-                scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
                 scratch.write(SCRATCH, RUST_WITH_ONE_MOVED);
                 scratch.git(&["add", SCRATCH]);
             },
@@ -325,17 +230,21 @@ fn check_suppressions() {
         ),
         (
             "a count above the baseline is refused with nothing staged",
-            |scratch| scratch.commit_initial(RUST_WITH_TWO, "expect/clippy::too_many_lines\t1"),
+            |scratch| {
+                scratch.commit_initial(SCRATCH, RUST_WITH_TWO, "expect/clippy::too_many_lines\t1");
+            },
             Some("baseline allows 1"),
         ),
         (
             "a count below the baseline is refused too",
-            |scratch| scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t3"),
+            |scratch| {
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t3");
+            },
             Some("baseline still claims 3"),
         ),
         (
             "a rule the baseline has never heard of is refused",
-            |scratch| scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::float_cmp\t1"),
+            |scratch| scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::float_cmp\t1"),
             Some("does not list this rule"),
         ),
     ]);
@@ -348,23 +257,25 @@ fn check_suppressions_detector_and_missing_baseline() {
     run_cases(&[
         (
             "an attribute behind a string containing a comment opener still counts",
-            |scratch| scratch.commit_initial(RUST_AFTER_URL, "expect/clippy::float_cmp\t1"),
+            |scratch| {
+                scratch.commit_initial(SCRATCH, RUST_AFTER_URL, "expect/clippy::float_cmp\t1");
+            },
             Some("expect/clippy::too_many_lines"),
         ),
         (
             "an attribute mentioned in prose is not a suppression",
-            |scratch| scratch.commit_initial(RUST_PROSE_MENTION, ""),
+            |scratch| scratch.commit_initial(SCRATCH, RUST_PROSE_MENTION, ""),
             None,
         ),
         (
             "an attribute inside a block comment is not a suppression either",
-            |scratch| scratch.commit_initial(RUST_BLOCK_COMMENT, ""),
+            |scratch| scratch.commit_initial(SCRATCH, RUST_BLOCK_COMMENT, ""),
             None,
         ),
         (
             "a deleted baseline is refused rather than treated as no suppressions",
             |scratch| {
-                scratch.commit_initial(RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
+                scratch.commit_initial(SCRATCH, RUST_WITH_ONE, "expect/clippy::too_many_lines\t1");
                 scratch.git(&["rm", "-q", BASELINE_FILE]);
             },
             Some("is missing"),
@@ -372,7 +283,7 @@ fn check_suppressions_detector_and_missing_baseline() {
         (
             "a deleted baseline is refused in a tree with no suppressions at all",
             |scratch| {
-                scratch.commit_initial(RUST_PROSE_MENTION, "");
+                scratch.commit_initial(SCRATCH, RUST_PROSE_MENTION, "");
                 scratch.git(&["rm", "-q", BASELINE_FILE]);
             },
             Some("is missing"),
@@ -385,8 +296,8 @@ fn check_suppressions_detector_and_missing_baseline() {
 /// out.
 #[test]
 fn update_writes_an_accepted_baseline() {
-    let scratch = Scratch::new();
-    scratch.commit_initial(RUST_WITH_TWO, "expect/clippy::too_many_lines\t1");
+    let scratch = new_scratch();
+    scratch.commit_initial(SCRATCH, RUST_WITH_TWO, "expect/clippy::too_many_lines\t1");
     let (accepted, output) = scratch.ratchet(&[]);
     assert!(
         !accepted,
@@ -413,7 +324,7 @@ fn update_writes_an_accepted_baseline() {
 /// its suppressions out of the ratchet without anything else noticing.
 #[test]
 fn counts_every_family() {
-    let scratch = Scratch::new();
+    let scratch = new_scratch();
     scratch.write("Dockerfile", DOCKERFILE_WITH_IGNORES);
     scratch.write("run.sh", SHELL_WITH_DISABLE);
     scratch.write("src/attributes.rs", RUST_WITH_ATTRIBUTES);
@@ -459,8 +370,9 @@ fn counts_every_family() {
 /// on its own line, and adding one there leaves the opening line untouched.
 #[test]
 fn sees_a_lint_added_to_a_multi_line_expect() {
-    let scratch = Scratch::new();
+    let scratch = new_scratch();
     scratch.commit_initial(
+        SCRATCH,
         RUST_WITH_MULTI_LINE_EXPECT,
         "expect/clippy::too_many_lines\t1",
     );
@@ -486,8 +398,8 @@ fn sees_a_lint_added_to_a_multi_line_expect() {
 #[test]
 fn reads_the_staged_file_not_the_hunk() {
     // A line added inside a raw string is not a suppression.
-    let scratch = Scratch::new();
-    scratch.commit_initial(RUST_RAW_STRING_FIXTURE, "");
+    let scratch = new_scratch();
+    scratch.commit_initial(SCRATCH, RUST_RAW_STRING_FIXTURE, "");
     scratch.write(SCRATCH, RUST_RAW_STRING_FIXTURE_EXTENDED);
     scratch.git(&["add", SCRATCH]);
     let (accepted, output) = scratch.ratchet(&[]);
@@ -499,8 +411,8 @@ fn reads_the_staged_file_not_the_hunk() {
     // A real attribute added after the raw string still is. The staged-diff rule's own message is
     // asserted: the count rule refuses this edit too, and asserting on the refusal alone would let
     // a detector that found nothing pass.
-    let scratch = Scratch::new();
-    scratch.commit_initial(RUST_RAW_STRING_FIXTURE, "");
+    let scratch = new_scratch();
+    scratch.commit_initial(SCRATCH, RUST_RAW_STRING_FIXTURE, "");
     scratch.write(SCRATCH, RUST_RAW_STRING_FIXTURE_AND_ATTRIBUTE);
     scratch.git(&["add", SCRATCH]);
     let (accepted, output) = scratch.ratchet(&[]);
@@ -520,7 +432,7 @@ fn reads_the_staged_file_not_the_hunk() {
 /// only remaining exits are a cosmetic edit or skipping the hook.
 #[test]
 fn update_discharges_a_swap() {
-    let scratch = Scratch::new();
+    let scratch = new_scratch();
     scratch.write(SCRATCH, RUST_WITH_ONE);
     scratch.write_baseline("");
     scratch.git(&["add", "-A"]);
@@ -564,7 +476,7 @@ fn update_discharges_a_swap() {
 /// counts unchanged, and therefore with nothing the baseline could say about it.
 #[test]
 fn allows_a_rename() {
-    let scratch = Scratch::new();
+    let scratch = new_scratch();
     scratch.write("old.rs", RUST_WITH_TWO);
     scratch.write_baseline("expect/clippy::too_many_lines\t2");
     scratch.git(&["add", "-A"]);

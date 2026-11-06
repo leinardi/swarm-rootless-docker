@@ -23,39 +23,31 @@
  */
 
 //! The offline documentation check: every relative link and fragment in the tracked Markdown
-//! resolves. The docs-links pre-commit hook runs this file.
+//! resolves. The docs-links pre-commit hook runs this file. The checker is
+//! `repo_meta::links`; the negative controls run it on scratch trees.
 
-use std::fs;
+use repo_meta::links::{Checker, check_repository, slug};
+use repo_meta::scratch::ScratchRepo;
+use repo_meta::{report, strings};
 
-use meta::links::{Checker, slug};
-use meta::repo;
-
-/// Go: `TestRelativeLinksResolve`. Every relative link and fragment in the tracked Markdown.
+/// Go: `TestRelativeLinksResolve`. Every relative link and fragment in the tracked Markdown
+/// (`repo_meta::links::check_repository`). The list comes from git, and a listing with no
+/// Markdown is a problem, not a pass on nothing.
 #[test]
 fn relative_links_resolve() {
-    let files = repo::tracked(&["*.md"]);
-    assert!(
-        !files.is_empty(),
-        "no tracked Markdown found; the check would check nothing"
-    );
-    let mut checker = Checker::new(&repo::root());
-    let mut problems = Vec::new();
-    for file in &files {
-        let found = checker
-            .check_file(file)
-            .unwrap_or_else(|error| panic!("read {file}: {error}"));
-        problems.extend(found.iter().map(ToString::to_string));
-    }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    let problems = check_repository(&meta::repo());
+    assert!(problems.is_empty(), "{}", report(&problems));
 }
 
-/// Go: `TestCheckerFindsBrokenLinks`. The link check is not blind, on a scratch tree.
+/// Go: `TestCheckerFindsBrokenLinks`. The link check is not blind, on a scratch tree: a missing
+/// file, a missing anchor and a link out of the tree are each reported; a link in a code span or
+/// a fence and an absolute URL are not checked.
 #[test]
 fn checker_finds_broken_links() {
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    fs::write(
-        scratch.path().join("a.md"),
-        [
+    let scratch = ScratchRepo::new();
+    scratch.write(
+        "a.md",
+        &[
             "# Title",
             "## 1. Section — `make rust-test`",
             "[ok](b.md#heading-two) [ok](#1-section--make-rust-test) [ok](https://example.com/missing)",
@@ -66,23 +58,40 @@ fn checker_finds_broken_links() {
             "[outside](../outside.md)",
         ]
         .join("\n"),
-    )
-    .expect("write a.md");
-    fs::write(scratch.path().join("b.md"), "# Heading Two\n").expect("write b.md");
+    );
+    scratch.write("b.md", "# Heading Two\n");
 
-    let problems: Vec<String> = Checker::new(scratch.path())
-        .check_file("a.md")
-        .expect("check a.md")
-        .iter()
-        .map(ToString::to_string)
-        .collect();
     assert_eq!(
-        problems,
+        strings(&Checker::new(scratch.path()).check_file("a.md")),
         [
             r#"a.md:4: link "missing.md": missing.md does not exist"#,
             r#"a.md:4: link "b.md#nope": b.md has no heading or anchor #nope"#,
             r#"a.md:8: link "../outside.md" leaves the repository"#,
         ]
+    );
+}
+
+/// A Markdown file that cannot be read is a problem, not a pass on nothing (the old reader
+/// panicked on it).
+#[test]
+fn an_unreadable_file_is_a_problem() {
+    let scratch = ScratchRepo::new();
+    let problems = Checker::new(scratch.path()).check_file("gone.md");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].location, "gone.md");
+}
+
+/// The repository check refuses a repository whose git lists no Markdown at all, and does not
+/// read an untracked Markdown file.
+#[test]
+fn no_markdown_is_a_problem() {
+    let scratch = ScratchRepo::new();
+    scratch.write("a.txt", "no Markdown here\n");
+    scratch.write("untracked.md", "[broken](missing.md)\n");
+    scratch.git(&["add", "a.txt"]);
+    assert_eq!(
+        strings(&check_repository(&scratch.repo())),
+        ["git lists no Markdown file; the link check would pass on nothing"]
     );
 }
 

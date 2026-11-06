@@ -23,199 +23,255 @@
  */
 
 //! The shipped image: its one Dockerfile, the pinned frontend, the build and runtime stages, the
-//! labels, and droast's enforcement of the label schema.
+//! version stamps, the labels, and droast's enforcement of the label schema. The generic checks
+//! are `repo_meta::image`'s, with this repository's parameters, beside the rules that are this
+//! image's own (the exact dind base, the last USER, the user rewrite, no apk, the `base.name`
+//! label, the label build arguments, and droast); the negative controls run them on altered
+//! copies of the real Dockerfile.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use meta::dockerfile::{self, Stage};
-use meta::{repo, toolgate};
 use regex::Regex;
+use repo_meta::dockerfile::{self, Stage};
+use repo_meta::image::{
+    BasePolicy, BuildBase, BuildStage, Download, RuntimeStage, STAMP_FIELDS, StampSources, Stamps,
+    build_stage_problems, dockerfiles, label_problems, only_dockerfile_problems, runtime_problems,
+    stage_problems, syntax_problems,
+};
+use repo_meta::{Problem, pattern, report, strings};
 
-const SHIPPED_DIR: &str = "deployments/docker";
 const SHIPPED_DOCKERFILE: &str = "deployments/docker/Dockerfile";
 const IMAGE_FRAGMENT: &str = ".mk/image.mk";
 const DROAST_CONFIG: &str = "droast.toml";
 const BINARY: &str = "/usr/local/bin/swarm-rootless-docker";
+const STAGES: &[&str] = &["build", "runtime"];
+const BASE_NAME_LABEL: &str = "org.opencontainers.image.base.name";
 
-/// The labels of the runtime stage; an empty value means any non-empty one. The base name is
-/// checked against the stage's own FROM.
-const WANT_LABELS: &[(&str, &str)] = &[
-    ("org.opencontainers.image.title", "swarm-rootless-docker"),
-    ("org.opencontainers.image.description", ""),
+const STAMPS: Stamps<'static> = Stamps {
+    prefix: "SWARM_ROOTLESS_DOCKER",
+    fields: &STAMP_FIELDS,
+    version_file: "src/version.rs",
+    build_command: "cargo zigbuild",
+};
+
+/// The labels of the runtime stage, exactly; `None` means any non-empty value. The base name is
+/// checked against the stage's own FROM by [`runtime_labels`].
+const WANT_LABELS: &[(&str, Option<&str>)] = &[
+    (
+        "org.opencontainers.image.title",
+        Some("swarm-rootless-docker"),
+    ),
+    ("org.opencontainers.image.description", None),
     (
         "org.opencontainers.image.source",
-        "https://github.com/leinardi/swarm-rootless-docker",
+        Some("https://github.com/leinardi/swarm-rootless-docker"),
     ),
-    ("org.opencontainers.image.version", "${VERSION}"),
-    ("org.opencontainers.image.revision", "${COMMIT}"),
-    ("org.opencontainers.image.created", "${DATE}"),
-    ("org.opencontainers.image.licenses", "MIT"),
-    ("org.opencontainers.image.base.name", ""),
-    ("org.opencontainers.image.base.digest", "${BASE_DIGEST}"),
+    ("org.opencontainers.image.version", Some("${VERSION}")),
+    ("org.opencontainers.image.revision", Some("${COMMIT}")),
+    ("org.opencontainers.image.created", Some("${DATE}")),
+    ("org.opencontainers.image.licenses", Some("MIT")),
+    (BASE_NAME_LABEL, None),
+    (
+        "org.opencontainers.image.base.digest",
+        Some("${BASE_DIGEST}"),
+    ),
     (
         "io.github.leinardi.swarm-rootless-docker.uid",
-        "${ROOTLESS_UID}",
+        Some("${ROOTLESS_UID}"),
     ),
     (
         "io.github.leinardi.swarm-rootless-docker.gid",
-        "${ROOTLESS_GID}",
+        Some("${ROOTLESS_GID}"),
     ),
 ];
 
-fn shipped_stages() -> Vec<Stage> {
-    dockerfile::parse(&repo::read(SHIPPED_DOCKERFILE))
-        .unwrap_or_else(|error| panic!("{SHIPPED_DOCKERFILE}: {error}"))
+/// What the build stage's instructions must contain: the version arguments, the toolchain
+/// releases, the platform arguments and each platform's triple, the sha256 check, the locked
+/// cargo-zigbuild install, the locked static musl build of the binary, stamped, and its copy out of
+/// the cache.
+const BUILD_REQUIRED: &[&str] = &[
+    "ARG VERSION",
+    "ARG COMMIT",
+    "ARG DATE",
+    "ARG RUST_VERSION=",
+    "ARG ZIG_VERSION=",
+    "ARG CARGO_ZIGBUILD_VERSION=",
+    "ARG BUILDARCH",
+    "ARG TARGETARCH",
+    "amd64) triple=x86_64-unknown-linux-musl;",
+    "arm64) triple=aarch64-unknown-linux-musl;",
+    "sha256sum -c -",
+    r#"cargo install --locked "cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}""#,
+    r#"cargo zigbuild --release --locked --target "${triple}" --bin swarm-rootless-docker"#,
+    r#"SWARM_ROOTLESS_DOCKER_VERSION="${VERSION}""#,
+    r#"SWARM_ROOTLESS_DOCKER_COMMIT="${COMMIT}""#,
+    r#"SWARM_ROOTLESS_DOCKER_DATE="${DATE}""#,
+    r#"cp "target/${triple}/release/swarm-rootless-docker" /out/swarm-rootless-docker"#,
+];
+
+fn shipped() -> String {
+    meta::repo().read(SHIPPED_DOCKERFILE)
 }
 
+/// The stage named `name` of `content`, which must be the only one.
+fn stage_of(content: &str, name: &str) -> Stage {
+    let stages =
+        dockerfile::parse(content).unwrap_or_else(|error| panic!("{SHIPPED_DOCKERFILE}: {error}"));
+    dockerfile::stage_named(SHIPPED_DOCKERFILE, &stages, name)
+        .cloned()
+        .unwrap_or_else(|problem| panic!("{problem}"))
+}
+
+/// The shipped Dockerfile's stage named `name`, which must be the only one.
 fn stage(name: &str) -> Stage {
-    let found: Vec<Stage> = shipped_stages()
-        .into_iter()
-        .filter(|candidate| candidate.name == name)
-        .collect();
-    match <[Stage; 1]>::try_from(found) {
-        Ok([stage]) => stage,
-        Err(found) => panic!(
-            "{SHIPPED_DOCKERFILE} has {} stages named {name}, want one",
-            found.len()
-        ),
-    }
+    stage_of(&shipped(), name)
 }
 
-/// deployments/docker holds exactly the image that ships.
-/// A second file there would look shipped to every reader and be built by nothing.
-#[test]
-fn shipped_dockerfile_is_the_only_one() {
-    let mut found: Vec<String> = fs::read_dir(repo::path(SHIPPED_DIR))
-        .expect("list deployments/docker")
-        .map(|entry| {
-            entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
+/// The first group of `pattern` in `content`, or a placeholder no rule accepts.
+fn captured(content: &str, pattern_text: &str) -> String {
+    pattern(pattern_text).captures(content).map_or_else(
+        || format!("<no match for {pattern_text}>"),
+        |captures| captures[1].to_owned(),
+    )
+}
+
+/// The arms a download must have, each `(platform, asset)` with the sha256 the Dockerfile's arm
+/// for exactly that platform and asset writes. The pairs are this repository's; a digest that is
+/// not a sha256, or an arm with another asset, leaves the arm unread, so the rule refuses it.
+fn arms(
+    content: &str,
+    asset_var: &str,
+    sha_var: &str,
+    pairs: &[(&str, &str)],
+) -> Vec<(String, String, String)> {
+    pairs
+        .iter()
+        .map(|(platform, asset)| {
+            let digest = captured(
+                content,
+                &format!(
+                    r"{}\)\s*{asset_var}={}; {sha_var}=([0-9a-f]{{64}}) ;;",
+                    regex::escape(platform),
+                    regex::escape(asset)
+                ),
+            );
+            ((*platform).to_owned(), (*asset).to_owned(), digest)
         })
-        .filter(|name| name == "Dockerfile" || name.ends_with(".Dockerfile"))
-        .collect();
-    found.sort();
-    assert_eq!(found, ["Dockerfile"], "{SHIPPED_DIR} holds {found:?}");
+        .collect()
 }
 
-/// The `BuildKit` frontend that reads the Dockerfile is a
-/// literal reference pinned by digest: a bare docker/dockerfile:1.7 is a tag that can be moved
-/// under a build, and Dependabot never updates the line.
-#[test]
-fn syntax_directive_is_pinned() {
-    let syntax = dockerfile::syntax(&repo::read(SHIPPED_DOCKERFILE))
-        .expect("the Dockerfile has a syntax parser directive on its first line");
-    assert_eq!(
-        dockerfile::repository(&syntax),
-        "docker/dockerfile",
-        "{syntax}"
-    );
-    assert!(
-        dockerfile::digest_pinned(&syntax),
-        "the frontend {syntax:?} is not pinned by digest"
-    );
-}
-
-/// Exactly two named stages, in order, each from a literal base pinned by tag. Neither is pinned
-/// by digest in git: dhi.io republishes its tags to ship security fixes, and the release pins the
-/// runtime base's digest per build. A variable base, a missing tag or latest would leave the base
-/// unreviewable.
-#[test]
-fn shipped_stages_are_build_and_runtime() {
-    let stages = shipped_stages();
-    for stage in &stages {
-        assert!(
-            dockerfile::tag_pinned(&stage.image),
-            "stage {:?} is FROM {:?}, want a literal reference with a tag other than latest",
-            stage.name,
-            stage.image
-        );
-    }
-    let names: Vec<&str> = stages.iter().map(|stage| stage.name.as_str()).collect();
-    assert_eq!(names, ["build", "runtime"]);
-}
-
-/// The Rust build: on the build platform, cross-compiled by
-/// cargo-zigbuild to the target platform's static musl triple, from the locked dependency graph,
-/// with the toolchain downloads checked, and stamped with the version strings the binary reads.
-#[test]
-fn build_stage() {
-    let build = stage("build");
-    assert_eq!(build.platform, "$BUILDPLATFORM");
-    assert_eq!(dockerfile::repository(&build.image), "dhi.io/rust");
-
-    let instructions = build.joined();
-    let missing: Vec<&str> = [
-        "ARG VERSION",
-        "ARG COMMIT",
-        "ARG DATE",
-        "ARG RUST_VERSION=",
-        "ARG ZIG_VERSION=",
-        "ARG CARGO_ZIGBUILD_VERSION=",
-        "ARG BUILDARCH",
-        "ARG TARGETARCH",
-        "amd64) triple=x86_64-unknown-linux-musl;",
-        "arm64) triple=aarch64-unknown-linux-musl;",
-        "sha256sum -c -",
-        r#"cargo install --locked "cargo-zigbuild@${CARGO_ZIGBUILD_VERSION}""#,
-        r#"cargo zigbuild --release --locked --target "${triple}" --bin swarm-rootless-docker"#,
-        r#"SWARM_ROOTLESS_DOCKER_VERSION="${VERSION}""#,
-        r#"SWARM_ROOTLESS_DOCKER_COMMIT="${COMMIT}""#,
-        r#"SWARM_ROOTLESS_DOCKER_DATE="${DATE}""#,
-        r#"cp "target/${triple}/release/swarm-rootless-docker" /out/swarm-rootless-docker"#,
+/// The build stage's two downloads: zig for the build platform, and the target platform's musl
+/// standard library for the image's own Rust release (the `dhi.io/rust` tag's, which the
+/// toolchain test holds to `ARG RUST_VERSION` and to rust-toolchain.toml's line); each in its own
+/// RUN, chosen by its platform argument's `case` with exactly these arms, and checked with
+/// `sha256sum -c -` there. zig's release is the Dockerfile's own `ARG ZIG_VERSION`: no other file
+/// pins it.
+fn downloads(content: &str) -> Vec<Download<'static>> {
+    vec![
+        Download {
+            tool: "zig",
+            url: "https://ziglang.org/download/${ZIG_VERSION}/zig-${zig_arch}-linux-${ZIG_VERSION}.tar.xz",
+            platform_arg: "BUILDARCH",
+            version_arg: "ZIG_VERSION",
+            version: captured(content, r"(?m)^ARG ZIG_VERSION=(\S+)$"),
+            asset_var: "zig_arch",
+            sha_var: "zig_sha256",
+            arms: arms(
+                content,
+                "zig_arch",
+                "zig_sha256",
+                &[("amd64", "x86_64"), ("arm64", "aarch64")],
+            ),
+        },
+        Download {
+            tool: "the musl rust-std",
+            url: "https://static.rust-lang.org/dist/rust-std-${RUST_VERSION}-${triple}.tar.xz",
+            platform_arg: "TARGETARCH",
+            version_arg: "RUST_VERSION",
+            version: captured(content, r"(?m)^FROM .*\bdhi\.io/rust:(\d+\.\d+\.\d+)-"),
+            asset_var: "triple",
+            sha_var: "std_sha256",
+            arms: arms(
+                content,
+                "triple",
+                "std_sha256",
+                &[
+                    ("amd64", "x86_64-unknown-linux-musl"),
+                    ("arm64", "aarch64-unknown-linux-musl"),
+                ],
+            ),
+        },
     ]
-    .into_iter()
-    .filter(|want| !instructions.contains(want))
-    .collect();
-    assert!(
-        missing.is_empty(),
-        "the build stage lacks {missing:?}:\n{instructions}"
-    );
-
-    // Every download is checked against its own digest: each curl in the stage is followed by a
-    // sha256sum check of the file it wrote.
-    let downloads = instructions.matches("curl -fsSL").count();
-    let checks = instructions.matches("| sha256sum -c -").count();
-    assert!(downloads > 0, "the build stage downloads nothing");
-    assert_eq!(
-        downloads, checks,
-        "a download in the build stage is not checked"
-    );
 }
 
-/// The posture of the image that ships: upstream's rootless Docker by its floating major tag, the
-/// binary as the entrypoint and the healthcheck, a non-root default user and no TLS directory. No
-/// package is installed and no volume or port is declared: the image adds the launcher to
-/// upstream's and nothing else.
-#[test]
-fn runtime_stage() {
-    let runtime = stage("runtime");
-    assert!(
-        Regex::new(r"^docker:\d+-dind-rootless$")
-            .expect("valid pattern")
-            .is_match(&runtime.image),
-        "the runtime stage is FROM {:?}, want docker:<major>-dind-rootless with no digest",
-        runtime.image
-    );
-    assert!(
-        runtime.platform.is_empty(),
-        "the runtime stage pins --platform={}; it has to follow the target platform",
-        runtime.platform
-    );
+/// The build stage's rules against `content`: on the build platform, from dhi.io/rust,
+/// cross-compiled by cargo-zigbuild to the target platform's static musl triple from the locked
+/// dependency graph, stamped, with every download a rule's and checked in its RUN.
+fn build_problems(content: &str) -> Vec<Problem> {
+    let downloads = downloads(content);
+    let rules = BuildStage {
+        platform: "$BUILDPLATFORM",
+        base: BuildBase::Repository("dhi.io/rust"),
+        required: BUILD_REQUIRED,
+        downloads: &downloads,
+    };
+    build_stage_problems(&stage_of(content, "build"), &rules)
+}
 
+/// The stamps of `content`, against src/version.rs, the Makefile and make-common's rust.mk.
+fn stamp_problems(content: &str) -> Vec<Problem> {
+    let repo = meta::repo();
+    let build = stage_of(content, "build");
+    STAMPS.problems(&StampSources {
+        version_rs: &repo.read("src/version.rs"),
+        build: &build,
+        makefile: &repo.read("Makefile"),
+        rust_mk: &repo.read(".mk/rust.mk"),
+        release: None,
+    })
+}
+
+/// The runtime stage's generic rules: from upstream's `docker` repository on the target platform,
+/// no VOLUME, ADD, EXPOSE, CMD or ONBUILD, and exactly one ENTRYPOINT (the binary), one COPY (the
+/// binary from the build stage), one ENV (no TLS directory) and one HEALTHCHECK (the binary's
+/// healthcheck mode, with its timings).
+fn runtime_stage_problems(runtime: &Stage) -> Vec<Problem> {
+    let entrypoint = format!(r#"["{BINARY}"]"#);
+    let copy = format!("--from=build /out/swarm-rootless-docker {BINARY}");
+    let healthcheck = format!(
+        r#"--interval=10s --timeout=5s --start-period=120s --retries=3 CMD ["{BINARY}", "healthcheck"]"#
+    );
+    runtime_problems(
+        runtime,
+        &RuntimeStage {
+            repository: "docker",
+            forbidden: &["VOLUME", "ADD", "EXPOSE", "CMD", "ONBUILD"],
+            exactly: &[
+                ("ENTRYPOINT", &entrypoint),
+                ("COPY", &copy),
+                ("ENV", "DOCKER_TLS_CERTDIR="),
+                ("HEALTHCHECK", &healthcheck),
+            ],
+        },
+    )
+}
+
+/// This image's own runtime rules: upstream's rootless Docker by its floating major tag and no
+/// digest, the last USER the rootless UID and GID, no apk, and the default UID and GID.
+fn local_runtime_problems(runtime: &Stage) -> Vec<String> {
     let mut problems = Vec::new();
+    if !pattern(r"^docker:\d+-dind-rootless$").is_match(&runtime.image) {
+        problems.push(format!(
+            "the runtime stage is FROM {:?}, want docker:<major>-dind-rootless with no digest",
+            runtime.image
+        ));
+    }
     let mut users = Vec::new();
     for instruction in &runtime.instructions {
         match instruction.keyword.as_str() {
-            "VOLUME" | "ADD" | "EXPOSE" | "CMD" | "ONBUILD" => problems.push(format!(
-                "the runtime stage carries {} {}",
-                instruction.keyword, instruction.args
-            )),
             "USER" => users.push(instruction.args.clone()),
             "RUN" if instruction.args.contains("apk") => problems.push(format!(
                 "the runtime stage installs packages: {}",
@@ -229,32 +285,6 @@ fn runtime_stage() {
             "the runtime stage's users are {users:?}; the last must be the rootless UID and GID"
         ));
     }
-    for (keyword, args) in [
-        ("ENTRYPOINT", format!(r#"["{BINARY}"]"#)),
-        (
-            "COPY",
-            format!("--from=build /out/swarm-rootless-docker {BINARY}"),
-        ),
-        ("ENV", "DOCKER_TLS_CERTDIR=".to_owned()),
-        (
-            "HEALTHCHECK",
-            format!(
-                r#"--interval=10s --timeout=5s --start-period=120s --retries=3 CMD ["{BINARY}", "healthcheck"]"#
-            ),
-        ),
-    ] {
-        let seen: Vec<&str> = runtime
-            .instructions
-            .iter()
-            .filter(|instruction| instruction.keyword == keyword)
-            .map(|instruction| instruction.args.as_str())
-            .collect();
-        if seen != [args.as_str()] {
-            problems.push(format!(
-                "the runtime stage has {keyword} {seen:?}, want exactly {keyword} {args}"
-            ));
-        }
-    }
     for want in ["ROOTLESS_UID=568", "ROOTLESS_GID=568"] {
         if !runtime
             .instructions
@@ -264,8 +294,242 @@ fn runtime_stage() {
             problems.push(format!("the runtime stage lacks ARG {want}"));
         }
     }
+    problems
+}
 
+/// Go: `TestShippedDockerfileIsTheOnlyOne`. deployments/docker holds exactly the image that
+/// ships, and the repository no other Dockerfile (tracked or new, `Dockerfile.<name>` and
+/// `<name>.Dockerfile` included): a second one would look shipped to every reader and be built by
+/// nothing.
+#[test]
+fn shipped_dockerfile_is_the_only_one() {
+    let problems = only_dockerfile_problems(&dockerfiles(&meta::repo()), SHIPPED_DOCKERFILE);
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// The `BuildKit` frontend that reads the Dockerfile is a literal docker/dockerfile reference
+/// pinned by tag and digest: a bare docker/dockerfile:1.7 is a tag that can be moved under a
+/// build, and Dependabot never updates the line.
+#[test]
+fn syntax_directive_is_pinned() {
+    let problems = syntax_problems(SHIPPED_DOCKERFILE, &shipped(), true);
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// Exactly two named stages, in order, each from a literal base pinned by tag
+/// (`BasePolicy::TagOnly`). Neither is pinned by digest in git: dhi.io republishes its tags to
+/// ship security fixes, and the release pins the runtime base's digest per build. A variable
+/// base, a missing tag, latest or a digest would leave the base unreviewable or frozen.
+#[test]
+fn shipped_stages_are_build_and_runtime() {
+    let problems = stage_problems(SHIPPED_DOCKERFILE, &shipped(), STAGES, BasePolicy::TagOnly);
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// The Rust build: on the build platform, cross-compiled by cargo-zigbuild to the target
+/// platform's static musl triple, from the locked dependency graph, with every toolchain download
+/// checked against its own digest in the RUN that fetches it, and stamped with the version
+/// strings the binary reads.
+#[test]
+fn build_stage() {
+    let problems = build_problems(&shipped());
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// The version, commit and date the binary reports come from the build: the build stage (in the
+/// RUN that runs cargo zigbuild) and the make targets set the three variables src/version.rs
+/// reads at compile time, from the same build arguments and git values. A path that stamped
+/// nothing would ship a binary reporting "dev".
+#[test]
+fn version_is_stamped() {
+    let problems = stamp_problems(&shipped());
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// The posture of the image that ships: upstream's rootless Docker by its floating major tag, the
+/// binary as the entrypoint and the healthcheck, a non-root default user and no TLS directory. No
+/// package is installed and no volume or port is declared: the image adds the launcher to
+/// upstream's and nothing else.
+#[test]
+fn runtime_stage() {
+    let runtime = stage("runtime");
+    let mut problems: Vec<String> = runtime_stage_problems(&runtime)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    problems.extend(local_runtime_problems(&runtime));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The shipped Dockerfile with the first `from` replaced by `to`, which must change it.
+fn alter(from: &str, to: &str) -> String {
+    let shipped = shipped();
+    let altered = shipped.replacen(from, to, 1);
+    assert_ne!(altered, shipped, "the alteration {from:?} changed nothing");
+    altered
+}
+
+/// The negative control of the stage rules, on altered copies of the shipped Dockerfile.
+#[test]
+fn stage_rules_refuse_altered_dockerfiles() {
+    // The stages: a digest on the floating base, a variable base, latest, and a third stage.
+    for (altered, want) in [
+        (
+            alter(
+                "FROM docker:29-dind-rootless AS runtime",
+                "FROM docker:29-dind-rootless@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS runtime",
+            ),
+            1,
+        ),
+        (
+            alter(
+                "FROM docker:29-dind-rootless AS runtime",
+                "FROM $BASE AS runtime",
+            ),
+            1,
+        ),
+        (
+            alter(
+                "FROM docker:29-dind-rootless AS runtime",
+                "FROM docker:latest AS runtime",
+            ),
+            1,
+        ),
+        (
+            alter(
+                "FROM docker:29-dind-rootless AS runtime",
+                "FROM docker:29-dind-rootless AS runtime\nFROM busybox:1.37 AS extra",
+            ),
+            1,
+        ),
+    ] {
+        let problems = stage_problems(SHIPPED_DOCKERFILE, &altered, STAGES, BasePolicy::TagOnly);
+        assert_eq!(problems.len(), want, "{}", report(&problems));
+    }
+}
+
+/// The negative control of the build and stamp rules, on altered copies of the shipped
+/// Dockerfile.
+#[test]
+fn build_rules_refuse_altered_dockerfiles() {
+    let shipped = shipped();
+    // The build: an unchecked download, a second fetch beside a listed one, a missing required
+    // text, the build stage on the target platform, and a digest arm that is not a sha256.
+    let zig_check = "\t&& echo \"${zig_sha256}  /tmp/zig.tar.xz\" | sha256sum -c - \\\n";
+    for (altered, want) in [
+        (alter(zig_check, ""), 2),
+        (
+            alter(
+                "\t&& mkdir /opt/zig \\\n",
+                "\t&& curl -fsSL -o /tmp/extra https://example.com/extra \\\n\t&& mkdir /opt/zig \\\n",
+            ),
+            2,
+        ),
+        (alter("--bin swarm-rootless-docker", "--bin other"), 1),
+        (
+            alter(
+                "FROM --platform=$BUILDPLATFORM dhi.io/rust",
+                "FROM dhi.io/rust",
+            ),
+            1,
+        ),
+    ] {
+        let problems = build_problems(&altered);
+        assert_eq!(problems.len(), want, "{}", report(&problems));
+    }
+    let digest = captured(
+        &shipped,
+        r"amd64\) zig_arch=x86_64; zig_sha256=([0-9a-f]{64}) ;;",
+    );
+    let unread = alter(
+        &format!("zig_sha256={digest} ;;"),
+        "zig_sha256=not-a-digest ;;",
+    );
+    assert_eq!(
+        build_problems(&unread).len(),
+        1,
+        "{}",
+        report(&build_problems(&unread))
+    );
+
+    // The stamps: one stamp out of the building RUN.
+    let unstamped = alter("\t\tSWARM_ROOTLESS_DOCKER_DATE=\"${DATE}\" \\\n", "");
+    assert_eq!(
+        strings(&stamp_problems(&unstamped)),
+        ["the RUN that runs cargo zigbuild does not stamp SWARM_ROOTLESS_DOCKER_DATE from $DATE"]
+    );
+}
+
+/// The negative control of the runtime and label rules, on altered copies of the shipped
+/// Dockerfile.
+#[test]
+fn runtime_rules_refuse_altered_dockerfiles() {
+    // The runtime: a forbidden instruction, a second COPY, and a pinned platform.
+    for (altered, want) in [
+        (alter("USER root\n", "USER root\nVOLUME /data\n"), 1),
+        (alter("USER root\n", "USER root\nCOPY x /x\n"), 1),
+        (
+            alter(
+                "FROM docker:29-dind-rootless AS runtime",
+                "FROM --platform=linux/amd64 docker:29-dind-rootless AS runtime",
+            ),
+            1,
+        ),
+        (
+            alter(
+                "ENV DOCKER_TLS_CERTDIR=\n",
+                "ENV DOCKER_TLS_CERTDIR=/certs\n",
+            ),
+            1,
+        ),
+    ] {
+        let problems = runtime_stage_problems(&stage_of(&altered, "runtime"));
+        assert_eq!(problems.len(), want, "{}", report(&problems));
+    }
+
+    // The image's own rules: a USER after the rootless one, an apk install, another base.
+    for altered in [
+        alter(
+            "ENV DOCKER_TLS_CERTDIR=\n",
+            "ENV DOCKER_TLS_CERTDIR=\nUSER root\n",
+        ),
+        alter("USER root\n", "USER root\nRUN apk add --no-cache curl\n"),
+        alter(
+            "FROM docker:29-dind-rootless AS runtime",
+            "FROM docker:29-dind AS runtime",
+        ),
+    ] {
+        assert_eq!(
+            local_runtime_problems(&stage_of(&altered, "runtime")).len(),
+            1,
+            "{altered}"
+        );
+    }
+
+    // The labels: one missing, one extra, one with another value.
+    for (altered, want) in [
+        (
+            alter("\torg.opencontainers.image.licenses=\"MIT\" \\\n", ""),
+            1,
+        ),
+        (
+            alter(
+                "\torg.opencontainers.image.licenses=\"MIT\" \\\n",
+                "\torg.opencontainers.image.licenses=\"MIT\" \\\n\textra.label=\"x\" \\\n",
+            ),
+            1,
+        ),
+        (
+            alter(
+                "org.opencontainers.image.licenses=\"MIT\"",
+                "org.opencontainers.image.licenses=\"Apache-2.0\"",
+            ),
+            1,
+        ),
+    ] {
+        let problems = label_problems(&stage_of(&altered, "runtime"), WANT_LABELS);
+        assert_eq!(problems.len(), want, "{}", report(&problems));
+    }
 }
 
 /// One RUN in the runtime stage, and it is the user rewrite: renumber the user and group and their
@@ -307,27 +571,17 @@ fn the_user_rewrite_is_the_only_run() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// Exactly the expected labels, the base name naming the stage's own FROM.
+/// Exactly the expected labels (`repo_meta::image::label_problems`), and the base name naming the
+/// stage's own FROM, as Docker Hub's library repository.
 #[test]
 fn runtime_labels() {
     let runtime = stage("runtime");
-    let mut problems = Vec::new();
+    let mut problems: Vec<String> = label_problems(&runtime, WANT_LABELS)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
     let labels = dockerfile::labels(&runtime);
-    for (key, value) in WANT_LABELS {
-        let actual = labels.get(*key).map_or("", String::as_str);
-        if actual.is_empty() || (!value.is_empty() && actual != *value) {
-            problems.push(format!("label {key} is {actual:?}, want {value:?}"));
-        }
-    }
-    if labels.len() != WANT_LABELS.len() {
-        problems.push(format!(
-            "the runtime stage carries labels {labels:?}, want exactly {} labels",
-            WANT_LABELS.len()
-        ));
-    }
-    let base_name = labels
-        .get("org.opencontainers.image.base.name")
-        .map_or("", String::as_str);
+    let base_name = labels.get(BASE_NAME_LABEL).map_or("", String::as_str);
     if base_name != format!("docker.io/library/{}", runtime.image) {
         problems.push(format!(
             "the base name label is {base_name:?}, not the stage's FROM {:?}",
@@ -341,7 +595,7 @@ fn runtime_labels() {
 /// say dev, none and unknown, and the UID and GID fall back to the defaults.
 #[test]
 fn label_arguments_are_supplied() {
-    let content = repo::read(IMAGE_FRAGMENT);
+    let content = meta::repo().read(IMAGE_FRAGMENT);
     for argument in ["VERSION", "COMMIT", "DATE", "ROOTLESS_UID", "ROOTLESS_GID"] {
         let pattern = Regex::new(&format!(r"--build-arg {argument}=\S")).expect("valid pattern");
         assert!(
@@ -357,15 +611,15 @@ const LABEL_TEST: &str = "droast_enforces_the_labels";
 /// The path of droast, after checking that the `shellcheck` its required bridge runs is on `PATH`
 /// too. `None` when either is missing and the test should return early.
 fn lookup_droast() -> Option<PathBuf> {
-    let droast = toolgate::lookup(toolgate::DROAST)?;
-    toolgate::lookup(toolgate::SHELLCHECK)?;
+    let droast = meta::TOOLS.lookup(meta::DROAST)?;
+    meta::TOOLS.lookup(meta::SHELLCHECK)?;
     Some(droast)
 }
 
 fn run_droast(droast: &Path, dockerfile: &Path) -> Output {
     Command::new(droast)
         .arg("--config")
-        .arg(repo::path(DROAST_CONFIG))
+        .arg(meta::repo().path(DROAST_CONFIG))
         .arg(dockerfile)
         .output()
         .unwrap_or_else(|error| panic!("run droast: {error}"))
@@ -380,7 +634,7 @@ fn droast_enforces_the_labels() {
         return;
     };
 
-    let output = run_droast(&droast, &repo::path(SHIPPED_DOCKERFILE));
+    let output = run_droast(&droast, &meta::repo().path(SHIPPED_DOCKERFILE));
     assert!(
         output.status.success(),
         "droast rejects {SHIPPED_DOCKERFILE}:\n{}{}",
@@ -388,7 +642,7 @@ fn droast_enforces_the_labels() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let shipped = repo::read(SHIPPED_DOCKERFILE);
+    let shipped = meta::repo().read(SHIPPED_DOCKERFILE);
     let without_version = Regex::new(r"(?m)^\s*org\.opencontainers\.image\.version=.*\n")
         .expect("valid pattern")
         .replace_all(&shipped, "")
@@ -431,7 +685,7 @@ fn droast_enforces_the_labels() {
 fn run_label_test_without_shellcheck(require: bool) -> Output {
     let path = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("create the scratch PATH directory: {error}"));
-    let stub = path.path().join(toolgate::DROAST);
+    let stub = path.path().join(meta::DROAST);
     fs::write(&stub, "#!/bin/sh\nexit 0\n")
         .unwrap_or_else(|error| panic!("write the stub droast: {error}"));
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755))
@@ -444,9 +698,9 @@ fn run_label_test_without_shellcheck(require: bool) -> Output {
         .args([LABEL_TEST, "--exact", "--nocapture", "--test-threads=1"])
         .env("PATH", path.path());
     if require {
-        command.env(toolgate::REQUIRE_ENV, "1");
+        command.env(meta::TOOLS.require_env, "1");
     } else {
-        command.env_remove(toolgate::REQUIRE_ENV);
+        command.env_remove(meta::TOOLS.require_env);
     }
     command
         .output()
@@ -479,7 +733,7 @@ fn label_test_fails_without_shellcheck_when_tools_are_required() {
     assert!(
         !output.status.success() && stdout.contains("1 failed"),
         "{LABEL_TEST} did not fail without shellcheck under {}=1:\n{stdout}{stderr}",
-        toolgate::REQUIRE_ENV
+        meta::TOOLS.require_env
     );
     assert!(
         format!("{stdout}{stderr}").contains("shellcheck is required"),

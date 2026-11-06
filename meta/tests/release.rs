@@ -25,9 +25,8 @@
 //! The release: the Docker major lives in the Dockerfile alone, the two workflows that read the
 //! published images agree on what they are, and every release script is tested in CI.
 
-use meta::repo;
 use regex::Regex;
-use serde_yaml_ng::Value;
+use repo_meta::yaml::{self, Value};
 
 const RELEASE: &str = ".github/workflows/release.yaml";
 const SCHEDULED_SCAN: &str = ".github/workflows/scheduled-scan.yaml";
@@ -82,8 +81,7 @@ fn major_hits(content: &str) -> Vec<String> {
 }
 
 fn workflow(file: &str) -> Value {
-    serde_yaml_ng::from_str(&repo::read(file))
-        .unwrap_or_else(|error| panic!("parse {file}: {error}"))
+    yaml::parse(file, &meta::repo().read(file)).unwrap_or_else(|problem| panic!("{problem}"))
 }
 
 fn env_value(file: &str, document: &Value, key: &str) -> String {
@@ -99,7 +97,7 @@ fn release_files_name_no_docker_major() {
     let problems: Vec<String> = MAJOR_FREE
         .iter()
         .flat_map(|file| {
-            major_hits(&repo::read(file))
+            major_hits(&meta::repo().read(file))
                 .into_iter()
                 .map(move |line| format!("{file}: {line}"))
         })
@@ -153,7 +151,7 @@ fn named_majors(content: &str) -> Vec<String> {
 /// and no other.
 #[test]
 fn docs_name_the_dockerfile_major() {
-    let dockerfile = repo::read(DOCKERFILE);
+    let dockerfile = meta::repo().read(DOCKERFILE);
     let major = re(r"(?m)^FROM docker:(\d+)-dind-rootless AS runtime$")
         .captures(&dockerfile)
         .map_or_else(
@@ -162,7 +160,7 @@ fn docs_name_the_dockerfile_major() {
         );
     let mut problems = Vec::new();
     for file in NAME_THE_MAJOR {
-        let named = named_majors(&repo::read(file));
+        let named = named_majors(&meta::repo().read(file));
         if !named.contains(&major) {
             problems.push(format!("{file} does not name Docker {major}"));
         }
@@ -223,7 +221,7 @@ fn the_integration_variant_is_the_tested_one() {
     );
 
     let uid = re(r#"(?m)^pub\(crate\) const UID_TEXT: &str = "(\d+)";$"#)
-        .captures(&repo::read(HARNESS))
+        .captures(&meta::repo().read(HARNESS))
         .map_or_else(
             || panic!("{HARNESS} has no UID_TEXT"),
             |captures| captures[1].to_owned(),
@@ -239,7 +237,7 @@ fn the_integration_variant_is_the_tested_one() {
 /// runs each one.
 #[test]
 fn release_scripts_are_tested_in_ci() {
-    let files = repo::files_under(SCRIPTS, &[".sh"]);
+    let files = meta::repo().files_under(SCRIPTS, &[".sh"]);
     let (tests, scripts): (Vec<&String>, Vec<&String>) =
         files.iter().partition(|file| file.ends_with(".test.sh"));
     assert!(
@@ -249,7 +247,7 @@ fn release_scripts_are_tested_in_ci() {
 
     let ci = workflow(CI);
     let runs: Vec<&str> = ci["jobs"]["release-scripts"]["steps"]
-        .as_sequence()
+        .as_array()
         .unwrap_or_else(|| panic!("{CI} has no release-scripts job"))
         .iter()
         .filter_map(|step| step["run"].as_str())
@@ -269,7 +267,7 @@ fn release_scripts_are_tested_in_ci() {
         }
     }
     let needed = ci["jobs"]["ci-result"]["needs"]
-        .as_sequence()
+        .as_array()
         .is_some_and(|needs| {
             needs
                 .iter()

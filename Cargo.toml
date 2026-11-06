@@ -17,10 +17,10 @@ repository = "https://github.com/leinardi/swarm-rootless-docker"
 # `path = "../rust-common/crates/<name>"`, never in a release or image build (the image's build
 # context does not hold them).
 [workspace.dependencies]
-repo-meta = { git = "https://github.com/leinardi/rust-common", rev = "f1c8ef2336cbe57119f058d11fcf4d34f0f3b52d", version = "0.1" }
-service-kit = { git = "https://github.com/leinardi/rust-common", rev = "f1c8ef2336cbe57119f058d11fcf4d34f0f3b52d", version = "0.1" }
-testenv-core = { git = "https://github.com/leinardi/rust-common", rev = "f1c8ef2336cbe57119f058d11fcf4d34f0f3b52d", version = "0.1" }
-tracing-setup = { git = "https://github.com/leinardi/rust-common", rev = "f1c8ef2336cbe57119f058d11fcf4d34f0f3b52d", version = "0.1" }
+repo-meta = { git = "https://github.com/leinardi/rust-common", rev = "84186a1b24af2dfbff24455d0027cb7c23976f27", version = "0.1" }
+service-kit = { git = "https://github.com/leinardi/rust-common", rev = "84186a1b24af2dfbff24455d0027cb7c23976f27", version = "0.1" }
+testenv-core = { git = "https://github.com/leinardi/rust-common", rev = "84186a1b24af2dfbff24455d0027cb7c23976f27", version = "0.1" }
+tracing-setup = { git = "https://github.com/leinardi/rust-common", rev = "84186a1b24af2dfbff24455d0027cb7c23976f27", version = "0.1" }
 
 # The lint set lives here once. Every member opts in with `[lints] workspace = true` (a member does
 # not inherit it otherwise, and the meta crate asserts that each one does), and every clippy run is
