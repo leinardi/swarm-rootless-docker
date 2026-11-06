@@ -134,9 +134,12 @@ once rust-common's next release is out). Each member opts in with `<name>.worksp
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
   by moving the `rev`.
-- **Moving the `rev`** needs the network: change it, then run `cargo update -p repo-meta` (one
-  crate refreshes the whole git source in `Cargo.lock`) before the `--locked` make targets, which
-  otherwise refuse the stale lock. Commit the `Cargo.toml` and `Cargo.lock` changes together.
+- **Moving the `rev`** needs the network: change it on every rust-common line (nothing checks that
+  they agree), then run `cargo fetch` before the `--locked` make targets, which otherwise refuse
+  the stale lock. The manifest change is what makes cargo re-resolve the git source; `cargo fetch`
+  changes nothing else, whereas `cargo update -p <crate>` can also move unrelated edges.
+  `git diff Cargo.lock` must touch only rust-common lines. Commit the `Cargo.toml` and
+  `Cargo.lock` changes together.
   `deny.toml` allow-lists the source (`allow-git`); it changes with the URL. `make rust-deny`
   checks the root package's graph only, so the meta crate's rust-common crates are not gated by
   cargo-deny.
@@ -144,9 +147,9 @@ once rust-common's next release is out). Each member opts in with `<name>.worksp
   `[patch."https://github.com/leinardi/rust-common"]` table in the root `Cargo.toml`, one
   `<name> = { path = "../rust-common/crates/<name>" }` line per crate the workspace names (a
   patched crate's own rust-common dependencies are path dependencies there, so they follow). The
-  patch re-locks the crates, so refresh `Cargo.lock` once without `--locked` (`cargo update -p
-  repo-meta`). When done, remove the table and `git checkout Cargo.lock`: neither the table nor
-  the patched lock is ever committed, since CI and the image build cannot see the path.
+  patch re-locks the crates, so refresh `Cargo.lock` once without `--locked` (`cargo fetch`). When
+  done, remove the table and `git checkout Cargo.lock`: neither the table nor the patched lock is
+  ever committed, since CI and the image build cannot see the path.
 
 This repository's intentional differences from the other Rust services:
 
@@ -165,7 +168,7 @@ Run before considering an edit done. `make check` applies to every row.
 | --- | --- |
 | `**/*.rs` | `make verify`, then `make check-stage` |
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
-| the rust-common `rev` in the root `Cargo.toml` | `cargo update -p repo-meta`, then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
+| the rust-common `rev` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
 | `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
 | `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
