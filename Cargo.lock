@@ -213,8 +213,8 @@ dependencies = [
 
 [[package]]
 name = "docker-client"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?rev=2653891901ba88ac95b07b5ecb93e6adb70aa13c#2653891901ba88ac95b07b5ecb93e6adb70aa13c"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
  "bollard",
  "bytes",
@@ -826,8 +826,8 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "repo-meta"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?rev=2653891901ba88ac95b07b5ecb93e6adb70aa13c#2653891901ba88ac95b07b5ecb93e6adb70aa13c"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
  "regex",
  "serde-saphyr",
@@ -959,8 +959,8 @@ dependencies = [
 
 [[package]]
 name = "service-kit"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?rev=2653891901ba88ac95b07b5ecb93e6adb70aa13c#2653891901ba88ac95b07b5ecb93e6adb70aa13c"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 
 [[package]]
 name = "sharded-slab"
@@ -1092,8 +1092,8 @@ dependencies = [
 
 [[package]]
 name = "testenv-core"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?rev=2653891901ba88ac95b07b5ecb93e6adb70aa13c#2653891901ba88ac95b07b5ecb93e6adb70aa13c"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
  "jiff",
  "regex",
@@ -1256,8 +1256,8 @@ dependencies = [
 
 [[package]]
 name = "tracing-setup"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?rev=2653891901ba88ac95b07b5ecb93e6adb70aa13c#2653891901ba88ac95b07b5ecb93e6adb70aa13c"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
  "serde_json",
  "tracing",
