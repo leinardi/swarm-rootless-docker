@@ -84,7 +84,8 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   checks, NFSv4 ACL decoding included) and `status/` (the status socket the `healthcheck` mode
   asks). Around them: `config/` (every flag as a validated type), `spec/` (each container the
   launcher creates, from one function, and the labels), `node/` (the node lock and stale rules),
-  `docker/` (the Docker API behind a trait: bollard, and the recording fake for tests), `mounts/`
+  `docker/` (the Docker API behind a trait: bollard through rust-common's `docker-client`, and the
+  recording fake for tests), `mounts/`
   (where a host path lies, from `mountinfo`), `socket/`, `output.rs` (stdout and stderr off the
   runtime), `logger.rs` and `version.rs`.
 - `tests/integration/` — the integration tests against the built image (`docs/testing.md`);
@@ -126,10 +127,10 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 
 `repo-meta` and `testenv-core` (the meta crate's dependencies, default features), `tracing-setup`
 (the logger's subscriber, written to its `Lane`; the root `[dev-dependencies]` add its `testing`
-feature for the logger tests' `Capture`) and `service-kit` (`buildinfo!` only, no features) come
-from [leinardi/rust-common](https://github.com/leinardi/rust-common), a git
-dependency pinned by release tag (`tag = "v0.3.0"`) in the root `Cargo.toml`'s
-`[workspace.dependencies]`, with `version = "0.3"`, the tag's `<major>.<minor>`.
+feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
+`docker-client` (feature `attach`) come from
+[leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
+release tag (`tag = "v0.4.0"`, with `version = "0.4"`) in the root `Cargo.toml`'s `[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
@@ -156,8 +157,11 @@ Each member opts in with `<name>.workspace = true`.
 
 This repository's intentional differences from the other Rust services:
 
-- **bollard, not rust-common's `docker-engine`:** the launcher was never a Go port, so it has no Go
-  client's wire behaviour to keep; the client stays behind the `docker/` trait.
+- **`docker-client`, not rust-common's `docker-engine`:** the launcher was never a Go port, so it
+  has no Go client's wire behaviour to keep. It uses `docker-client` (feature `attach`) for the
+  connection, the whole-call bound, the error kinds and the attach and wait pumps, and bollard
+  comes through it (`docker_client::bollard`); the `DockerApi` trait, its own types and
+  `DockerError` stay here.
 - **No wall-clock ban** (no go-clock, no `disallowed_methods` for `SystemTime`): the launcher's own
   code reads no calendar time (only the log timestamps do, through tracing-subscriber); its
   deadlines are monotonic, and the launcher and node tests drive the timers with the paused tokio

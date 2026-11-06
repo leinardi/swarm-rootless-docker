@@ -212,6 +212,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "docker-client"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
+dependencies = [
+ "bollard",
+ "bytes",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde_json",
+ "serde_urlencoded",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -335,14 +354,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi",
-]
-
-[[package]]
-name = "go-compat"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
-dependencies = [
- "jiff",
 ]
 
 [[package]]
@@ -815,10 +826,9 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "repo-meta"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
- "go-compat",
  "regex",
  "serde-saphyr",
  "serde_json",
@@ -949,8 +959,8 @@ dependencies = [
 
 [[package]]
 name = "service-kit"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 
 [[package]]
 name = "sharded-slab"
@@ -1010,9 +1020,8 @@ name = "swarm-rootless-docker"
 version = "0.0.0"
 dependencies = [
  "base64 0.23.1",
- "bollard",
  "clap",
- "futures-util",
+ "docker-client",
  "rustix",
  "serde",
  "serde_json",
@@ -1083,10 +1092,9 @@ dependencies = [
 
 [[package]]
 name = "testenv-core"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
- "go-compat",
  "jiff",
  "regex",
 ]
@@ -1248,8 +1256,8 @@ dependencies = [
 
 [[package]]
 name = "tracing-setup"
-version = "0.3.0"
-source = "git+https://github.com/leinardi/rust-common?tag=v0.3.0#0d93d4baed5a314a5f5c5d0a56093c85e1b86257"
+version = "0.4.0"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.4.0#e898522b90b1f02aed303a419aa620ac7e737371"
 dependencies = [
  "serde_json",
  "tracing",

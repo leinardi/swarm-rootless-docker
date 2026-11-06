@@ -56,9 +56,11 @@ a TCP listener.
    block the node. A daemon without the network and alias labels (from v0.1.0) holds no alias;
    one with only one of them is refused.
 7. **Start.** Upload `/etc/subuid` and `/etc/subgid` (root-owned, `0644`) into the created
-   container, attach to its output, start it, and only then register the wait: Docker's
-   `not-running` wait answers at once for a created container, and with `AutoRemove=false` a late
-   wait still gets the real exit code.
+   container, attach to its output, register the wait, then start it. The wait is for the
+   `next-exit` condition (`not-running` would answer at once for a created container), and the
+   launcher waits for the engine's response headers before it sends the start: the engine holds
+   the waiter then, so even a daemon that exits at once cannot be missed. The probe container is
+   started the same way.
 8. **Supervise.** Until one of: the daemon exits (the launcher exits with its code, never mapping a
    failure to 0), the log stream fails (stop, exit 1), or a stop signal arrives. Every 10 s the
    daemon's health is inspected and published on the status socket that the image's healthcheck

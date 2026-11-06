@@ -279,7 +279,8 @@ const PROBE: u64 = 3;
 const DAEMON: u64 = 4;
 
 /// The whole run, in order: identify; under the lock survey, probe, create; release; upload,
-/// attach, start, and the wait only after the start. The daemon's own status is the launcher's.
+/// attach, the wait (registered before the start), then the start. The daemon's own status is the
+/// launcher's.
 /// Go: `TestRun_CallOrder`, `TestRun_LongLivedDaemon`.
 #[tokio::test]
 async fn runs_in_order_and_returns_the_daemon_status() {
@@ -328,15 +329,15 @@ async fn runs_in_order_and_returns_the_daemon_status() {
             },
             Call::Create(spec::probe_name(&config)),
             Call::Attach(probe.clone()),
-            Call::Start(probe.clone()),
             Call::Wait(probe.clone()),
+            Call::Start(probe.clone()),
             Call::Remove(probe),
             Call::Create(spec::daemon_name(&config)),
             Call::Remove(lock),
             Call::Upload(daemon.clone()),
             Call::Attach(daemon.clone()),
-            Call::Start(daemon.clone()),
             Call::Wait(daemon.clone()),
+            Call::Start(daemon.clone()),
             Call::Remove(daemon),
         ]
     );

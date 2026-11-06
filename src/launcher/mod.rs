@@ -33,8 +33,8 @@
 //!    a stop request is only looked at once the lock is released, and every step in it is
 //!    bounded.
 //! 3. Upload the daemon's `/etc/subuid` and `/etc/subgid`, attach its output to the launcher's
-//!    own, start it, and only then register the wait (Docker's `not-running` condition answers at
-//!    once for a created container).
+//!    own, register the wait for the next exit (confirmed by the engine's response headers), and
+//!    only then start it, so an exit right after the start cannot be missed.
 //! 4. Supervise: the daemon's exit ends the launcher with the daemon's status; a lost log stream
 //!    or a failed wait stops the daemon and fails; `SIGTERM` or `SIGINT` stops it; its health is
 //!    published on the status socket.
@@ -471,7 +471,7 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
             .map_err(|source| docker_error("create the daemon container", source))
     }
 
-    /// Writes the subordinate ID files, attaches, starts, then registers the wait.
+    /// Writes the subordinate ID files, attaches, registers the wait, then starts.
     async fn start(&self, daemon: &str) -> Result<(ExitWait, Pump), LaunchError> {
         let archive = spec::subid_archive(self.config).map_err(LaunchError::Archive)?;
         self.docker
@@ -484,17 +484,18 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
             .await
             .map_err(|source| docker_error("attach to the daemon", source))?;
         let pump = Pump::spawn(output, self.console.clone());
-        self.docker
-            .start_container(daemon)
-            .await
-            .map_err(|source| docker_error("start the daemon", source))?;
-        // Only now: `not-running` answers at once for a container that has not started, and
-        // answers with the exit code for one that already stopped (it is not auto-removed).
+        // Before the start, and awaited: it returns once the engine holds the waiter, so the
+        // daemon's exit cannot be missed. `not-running` would answer at once for a created
+        // container, so the wait is for the next exit.
         let wait = self
             .docker
             .wait(daemon)
             .await
             .map_err(|source| docker_error("wait for the daemon", source))?;
+        self.docker
+            .start_container(daemon)
+            .await
+            .map_err(|source| docker_error("start the daemon", source))?;
         Ok((wait, pump))
     }
 
