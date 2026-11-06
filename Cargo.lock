@@ -340,7 +340,7 @@ dependencies = [
 [[package]]
 name = "go-compat"
 version = "0.1.0"
-source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.2.0#9bea100d0c0c52248d1adbd3bb9be0fe56e6d33e"
 dependencies = [
  "jiff",
 ]
@@ -816,7 +816,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "repo-meta"
 version = "0.1.0"
-source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.2.0#9bea100d0c0c52248d1adbd3bb9be0fe56e6d33e"
 dependencies = [
  "go-compat",
  "regex",
@@ -950,7 +950,7 @@ dependencies = [
 [[package]]
 name = "service-kit"
 version = "0.1.0"
-source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.2.0#9bea100d0c0c52248d1adbd3bb9be0fe56e6d33e"
 
 [[package]]
 name = "sharded-slab"
@@ -1084,7 +1084,7 @@ dependencies = [
 [[package]]
 name = "testenv-core"
 version = "0.1.0"
-source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.2.0#9bea100d0c0c52248d1adbd3bb9be0fe56e6d33e"
 dependencies = [
  "go-compat",
  "jiff",
@@ -1249,7 +1249,7 @@ dependencies = [
 [[package]]
 name = "tracing-setup"
 version = "0.1.0"
-source = "git+https://github.com/leinardi/rust-common?rev=84186a1b24af2dfbff24455d0027cb7c23976f27#84186a1b24af2dfbff24455d0027cb7c23976f27"
+source = "git+https://github.com/leinardi/rust-common?tag=v0.2.0#9bea100d0c0c52248d1adbd3bb9be0fe56e6d33e"
 dependencies = [
  "serde_json",
  "tracing",
