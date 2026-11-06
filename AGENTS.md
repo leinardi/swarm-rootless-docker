@@ -128,13 +128,14 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 (the logger's subscriber, written to its `Lane`; the root `[dev-dependencies]` add its `testing`
 feature for the logger tests' `Capture`) and `service-kit` (`buildinfo!` only, no features) come
 from [leinardi/rust-common](https://github.com/leinardi/rust-common), a git
-dependency pinned by `rev` in the root `Cargo.toml`'s `[workspace.dependencies]` (a release tag
-once rust-common's next release is out). Each member opts in with `<name>.workspace = true`.
+dependency pinned by release tag (`tag = "v0.2.0"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`; `version = "0.1"` tracks the crates' package version, not the tag.
+Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
-  by moving the `rev`.
-- **Moving the `rev`** needs the network: change it on every rust-common line (nothing checks that
+  by moving the `tag`.
+- **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
   they agree), then run `cargo fetch` before the `--locked` make targets, which otherwise refuse
   the stale lock. The manifest change is what makes cargo re-resolve the git source; `cargo fetch`
   changes nothing else, whereas `cargo update -p <crate>` can also move unrelated edges.
@@ -168,7 +169,7 @@ Run before considering an edit done. `make check` applies to every row.
 | --- | --- |
 | `**/*.rs` | `make verify`, then `make check-stage` |
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
-| the rust-common `rev` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
+| the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
 | `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
 | `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
