@@ -279,7 +279,8 @@ const PROBE: u64 = 3;
 const DAEMON: u64 = 4;
 
 /// The whole run, in order: identify; under the lock survey, probe, create; release; upload,
-/// attach, start, and the wait only after the start. The daemon's own status is the launcher's.
+/// attach, the wait (registered before the start), then the start. The daemon's own status is the
+/// launcher's.
 /// Go: `TestRun_CallOrder`, `TestRun_LongLivedDaemon`.
 #[tokio::test]
 async fn runs_in_order_and_returns_the_daemon_status() {

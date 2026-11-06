@@ -33,8 +33,8 @@
 //!    a stop request is only looked at once the lock is released, and every step in it is
 //!    bounded.
 //! 3. Upload the daemon's `/etc/subuid` and `/etc/subgid`, attach its output to the launcher's
-//!    own, start it, and only then register the wait (Docker's `not-running` condition answers at
-//!    once for a created container).
+//!    own, register the wait for the next exit (confirmed by the engine's response headers), and
+//!    only then start it, so an exit right after the start cannot be missed.
 //! 4. Supervise: the daemon's exit ends the launcher with the daemon's status; a lost log stream
 //!    or a failed wait stops the daemon and fails; `SIGTERM` or `SIGINT` stops it; its health is
 //!    published on the status socket.

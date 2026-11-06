@@ -520,8 +520,8 @@ pub fn daemon_labels(
 /// and Docker's DNS, which registers the hostname too, gets no name beyond [`dns_names`]. Aliases
 /// go in the endpoint of `--network`; without any, there is no `NetworkingConfig` at all.
 ///
-/// `AutoRemove` is off: the launcher waits for `not-running` and removes the container itself, so
-/// an early exit cannot remove it before the wait is registered.
+/// `AutoRemove` is off: the launcher, not the engine, decides when the container is removed. Its
+/// exit code comes from a `next-exit` wait registered before the start.
 ///
 /// # Errors
 ///
