@@ -513,10 +513,10 @@ impl DockerApi for FakeDocker {
         let mut state = self.enter(Call::Wait(id.to_owned()), Op::Wait, id)?;
         let container = state.container(id)?;
         let (sender, receiver) = oneshot::channel();
-        if container.status == Status::Running {
-            state.waiters.entry(id.to_owned()).or_default().push(sender);
-        } else {
+        if container.status == Status::Exited {
             let _ = sender.send(Ok(container.exit_code.unwrap_or(0)));
+        } else {
+            state.waiters.entry(id.to_owned()).or_default().push(sender);
         }
         Ok(receiver)
     }

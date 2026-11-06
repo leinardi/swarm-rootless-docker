@@ -103,6 +103,12 @@ async fn report(docker: &impl DockerApi, probe: &str) -> Result<(i64, Vec<u8>), 
         .attach(probe)
         .await
         .map_err(|source| docker_error("attach to the probe", source))?;
+    // The wait is registered before the start (see the daemon's): `not-running` would answer at
+    // once for a created container, so it is for the next exit.
+    let exit = docker
+        .wait(probe)
+        .await
+        .map_err(|source| docker_error("wait for the probe", source))?;
     docker
         .start_container(probe)
         .await
@@ -125,11 +131,7 @@ async fn report(docker: &impl DockerApi, probe: &str) -> Result<(i64, Vec<u8>), 
             ),
         }
     }
-    // After the start, as for the daemon: `not-running` answers at once for a created container.
-    let code = docker
-        .wait(probe)
-        .await
-        .map_err(|source| docker_error("wait for the probe", source))?
+    let code = exit
         .await
         .map_err(|_closed| LaunchError::Probe("the wait ended without a status".to_owned()))?
         .map_err(|source| docker_error("wait for the probe", source))?;

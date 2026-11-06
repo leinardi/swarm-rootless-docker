@@ -77,7 +77,9 @@ impl From<docker_client::Error> for DockerError {
             ErrorKind::NotFound => Self::NotFound,
             ErrorKind::Conflict => Self::Conflict(error.to_string()),
             ErrorKind::Timeout => Self::Timeout,
-            ErrorKind::Unavailable | ErrorKind::Other => Self::Other(error.to_string()),
+            ErrorKind::Cancelled | ErrorKind::Unavailable | ErrorKind::Other => {
+                Self::Other(error.to_string())
+            }
         }
     }
 }
@@ -196,8 +198,9 @@ pub trait DockerApi: Sync {
     /// bounded; the stream lasts as long as the container's output.
     fn attach(&self, id: &str) -> impl Future<Output = Result<OutputStream, DockerError>> + Send;
 
-    /// Asks for a container's exit code once it is not running, by ID. A container that already
-    /// stopped answers at once, so the wait may be asked for late.
+    /// Asks for a container's next exit code, by ID. Returns once the engine holds the waiter, so
+    /// it must be awaited before the start it is meant to see: a created container is not running,
+    /// and the wait does not answer for that.
     fn wait(&self, id: &str) -> impl Future<Output = Result<ExitWait, DockerError>> + Send;
 
     /// Starts a container, by ID.
@@ -219,6 +222,9 @@ pub trait DockerApi: Sync {
 #[derive(Debug, Clone)]
 pub struct Bollard {
     client: docker_client::bollard::Docker,
+    // The config the client was connected from: the streaming wait speaks to the same engine,
+    // at the same API version (nothing is negotiated, so both send the default).
+    config: Config,
     timeout: Duration,
 }
 
@@ -240,8 +246,12 @@ impl Bollard {
     /// [`DockerError::Other`] when the client cannot be built.
     pub fn with_timeout(path: &str, timeout: Duration) -> Result<Self, DockerError> {
         let config = Config::unix(path).response_header_timeout(timeout);
-        docker_client::connect(config)
-            .map(|client| Self { client, timeout })
+        docker_client::connect(config.clone())
+            .map(|client| Self {
+                client,
+                config,
+                timeout,
+            })
             .map_err(|error| DockerError::Other(error.to_string()))
     }
 
@@ -391,18 +401,21 @@ impl DockerApi for Bollard {
         Ok(receiver)
     }
 
-    // Nothing to await here: the request goes out from the spawned task. The condition answers
-    // for a container that already stopped, so the late request loses nothing.
-    fn wait(&self, id: &str) -> impl Future<Output = Result<ExitWait, DockerError>> + Send {
-        let mut exit = attach::wait(
-            &self.client,
+    // Returns once the engine holds the waiter, so a start made after it cannot overtake it. The
+    // engine's answer is read by a task that `attach::wait` spawns; it ends with the receiver.
+    async fn wait(&self, id: &str) -> Result<ExitWait, DockerError> {
+        let exit = Box::pin(attach::wait(
+            &self.config,
             id,
-            WaitCondition::NotRunning,
+            WaitCondition::NextExit,
+            self.timeout,
             CancellationToken::new(),
-        );
+        ))
+        .await?;
         let (mut sender, receiver) = oneshot::channel();
         tokio::spawn(async move {
             // Dropping the answer's receiver drops `exit`, which ends the wait's own task.
+            let mut exit = exit;
             let result = tokio::select! {
                 biased;
                 () = sender.closed() => return,
@@ -413,7 +426,7 @@ impl DockerApi for Bollard {
                 Err(_closed) => Err(DockerError::Other("the wait ended empty".to_owned())),
             });
         });
-        std::future::ready(Ok(receiver))
+        Ok(receiver)
     }
 
     async fn start_container(&self, id: &str) -> Result<(), DockerError> {

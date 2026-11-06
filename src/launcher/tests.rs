@@ -328,15 +328,15 @@ async fn runs_in_order_and_returns_the_daemon_status() {
             },
             Call::Create(spec::probe_name(&config)),
             Call::Attach(probe.clone()),
-            Call::Start(probe.clone()),
             Call::Wait(probe.clone()),
+            Call::Start(probe.clone()),
             Call::Remove(probe),
             Call::Create(spec::daemon_name(&config)),
             Call::Remove(lock),
             Call::Upload(daemon.clone()),
             Call::Attach(daemon.clone()),
-            Call::Start(daemon.clone()),
             Call::Wait(daemon.clone()),
+            Call::Start(daemon.clone()),
             Call::Remove(daemon),
         ]
     );
