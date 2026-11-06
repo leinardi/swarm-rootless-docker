@@ -93,13 +93,13 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
   version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `docs.rs` (Markdown
-  links), `dockerfiles.rs` (the image's shape and labels), `license_headers.rs` and
+  links), `dockerfiles.rs` (the image's shape, stamps and labels), `license_headers.rs` and
   `suppressions.rs` (the two scripts below), `release.rs` (no Docker major outside the Dockerfile,
   the README and the Compose example name its major, the two image workflows agree, every release
   script tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
-  `meta/src/` holds their helpers: `repo` reads tracked files, `gitenv` isolates
-  scratch-repository git commands, `toolgate` finds external tools, `dockerfile` parses a
-  Dockerfile and `links` checks Markdown.
+  Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
+  that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
+  and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
   floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
@@ -122,6 +122,47 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 - `.suppressions-baseline`: written by `scripts/check-suppressions.sh --update`.
 - `Cargo.lock`: written by cargo; change it with `cargo update -p <crate>`, never by hand.
 
+### Shared crates (rust-common)
+
+`repo-meta` and `testenv-core` (the meta crate's dependencies, default features), `tracing-setup`
+(the logger's subscriber, written to its `Lane`; the root `[dev-dependencies]` add its `testing`
+feature for the logger tests' `Capture`) and `service-kit` (`buildinfo!` only, no features) come
+from [leinardi/rust-common](https://github.com/leinardi/rust-common), a git
+dependency pinned by release tag (`tag = "v0.2.1"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`, with `version = "0.2"`, the tag's `<major>.<minor>`.
+Each member opts in with `<name>.workspace = true`.
+
+- **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
+  its code into this repository. A fix to shared code lands in rust-common first, then reaches here
+  by moving the `tag`.
+- **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
+  they agree), and `version` with it when the tag's `<major>.<minor>` moves (a `v0.3.0` checkout
+  does not resolve against `version = "0.2"`; a `v0.2.x` one does), then run `cargo fetch` before
+  the `--locked` make targets, which otherwise refuse the stale lock. The manifest change is what
+  makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
+  `cargo update -p <crate>` can also move unrelated edges.
+  `git diff Cargo.lock` must touch only rust-common lines. Commit the `Cargo.toml` and
+  `Cargo.lock` changes together.
+  `deny.toml` allow-lists the source (`allow-git`); it changes with the URL. `make rust-deny`
+  checks the root package's graph only, so the meta crate's rust-common crates are not gated by
+  cargo-deny.
+- **Local work on a shared crate** uses an uncommitted
+  `[patch."https://github.com/leinardi/rust-common"]` table in the root `Cargo.toml`, one
+  `<name> = { path = "../rust-common/crates/<name>" }` line per crate the workspace names (a
+  patched crate's own rust-common dependencies are path dependencies there, so they follow). The
+  patch re-locks the crates, so refresh `Cargo.lock` once without `--locked` (`cargo fetch`). When
+  done, remove the table and `git checkout Cargo.lock`: neither the table nor the patched lock is
+  ever committed, since CI and the image build cannot see the path.
+
+This repository's intentional differences from the other Rust services:
+
+- **bollard, not rust-common's `docker-engine`:** the launcher was never a Go port, so it has no Go
+  client's wire behaviour to keep; the client stays behind the `docker/` trait.
+- **No wall-clock ban** (no go-clock, no `disallowed_methods` for `SystemTime`): the launcher's own
+  code reads no calendar time (only the log timestamps do, through tracing-subscriber); its
+  deadlines are monotonic, and the launcher and node tests drive the timers with the paused tokio
+  clock.
+
 ## Validation matrix
 
 Run before considering an edit done. `make check` applies to every row.
@@ -130,6 +171,7 @@ Run before considering an edit done. `make check` applies to every row.
 | --- | --- |
 | `**/*.rs` | `make verify`, then `make check-stage` |
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
+| the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
 | `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
 | `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
@@ -177,8 +219,9 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
   falls back to a wider daemon profile, and the launcher never touches a container it does not
   provably own.
 - **Version strings:** `src/version.rs` reads `SWARM_ROOTLESS_DOCKER_VERSION`,
-  `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` at compile time (`option_env!`),
-  falling back to `dev`, `none` and `unknown`. `make rust-run` sets them from git
+  `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` at compile time (service-kit's
+  `buildinfo!`), falling back to `dev`, `none` and `unknown`; an empty variable stamps the empty
+  string, and `long()` formats the version line here. `make rust-run` sets them from git
   (make-common's `.mk/rust.mk`, with `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER` in the
   Makefile), and so does `make rust-build`.
 - Every Rust and shell file, the Makefile and the repo-local `.mk` fragments carry the MIT license

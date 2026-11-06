@@ -12,10 +12,17 @@ publish = false
 [lints]
 workspace = true
 
+# The repository checks the meta-tests run (repo-meta, rust-common), and the repository root and
+# the tool gate the library defines (testenv-core's repo_root! and toolgate, default features,
+# rust-common).
 [dependencies]
-regex = "1.13.1"
+repo-meta.workspace = true
+testenv-core.workspace = true
 
+# This repository's own rules: the source patterns (regex), the droast fixture and the stub PATH
+# of the tool-gate tests (tempfile), and the workspace manifests of the lint opt-in's negative
+# controls (toml).
 [dev-dependencies]
-serde_yaml_ng = "0.10"
+regex = "1.13.1"
 tempfile = "3.27.0"
 toml = "1.1.8"

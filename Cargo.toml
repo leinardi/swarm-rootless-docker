@@ -9,6 +9,19 @@ license = "MIT"
 authors = ["Roberto Leinardi"]
 repository = "https://github.com/leinardi/swarm-rootless-docker"
 
+# The crates shared with the other Rust services, from leinardi/rust-common: a git dependency
+# pinned by release tag (`tag = "v0.2.1"`) with `version = "0.2"`, the tag's `<major>.<minor>`; it
+# keeps cargo-deny's `wildcards = "deny"` satisfied and makes cargo refuse a checkout of another
+# version. Each member opts in with `<name>.workspace = true` and its own features. Local
+# work on both repositories: an uncommitted `[patch."https://github.com/leinardi/rust-common"]`
+# table naming each crate with `path = "../rust-common/crates/<name>"`, never in a release or image
+# build (the image's build context does not hold them).
+[workspace.dependencies]
+repo-meta = { git = "https://github.com/leinardi/rust-common", tag = "v0.2.1", version = "0.2" }
+service-kit = { git = "https://github.com/leinardi/rust-common", tag = "v0.2.1", version = "0.2" }
+testenv-core = { git = "https://github.com/leinardi/rust-common", tag = "v0.2.1", version = "0.2" }
+tracing-setup = { git = "https://github.com/leinardi/rust-common", tag = "v0.2.1", version = "0.2" }
+
 # The lint set lives here once. Every member opts in with `[lints] workspace = true` (a member does
 # not inherit it otherwise, and the meta crate asserts that each one does), and every clippy run is
 # workspace-wide.
@@ -47,6 +60,12 @@ publish = false
 workspace = true
 
 [dependencies]
+# The logger's subscriber: tracing-subscriber's text or flat JSON, no ANSI, UTC timestamps, the
+# target and the JSON span fields shown (rust-common); the writer (a Lane) and the flags are here.
+tracing-setup.workspace = true
+# The build stamps, read at compile time by buildinfo! (rust-common); no features: the runtime
+# and the signals stay this program's.
+service-kit.workspace = true
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "string"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
@@ -57,9 +76,12 @@ tar = { version = "0.4.46", default-features = false }
 thiserror = "2.0.21"
 tokio = { version = "1.54.1", default-features = false, features = ["rt", "time", "sync", "macros", "net", "io-util", "signal"] }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "json", "std"] }
+# MakeWriter, the bound of the logger's writer (output.rs's Lane).
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 
 [dev-dependencies]
+# Capture, the writer the logger's unit tests log into.
+tracing-setup = { workspace = true, features = ["testing"] }
 base64 = "0.23.1"
 tokio = { version = "1.54.1", default-features = false, features = ["test-util", "net", "io-util", "rt-multi-thread"] }
 
@@ -68,3 +90,16 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# The meta-tests scan the tree with regexes; unoptimised, regex compilation and matching dominate
+# their run time. Only the regex crates are optimised in dev and test builds, which costs a few
+# seconds on a clean build and nothing on an incremental one; the workspace's own code stays at
+# opt-level 0 for debugging.
+[profile.dev.package.regex]
+opt-level = 3
+
+[profile.dev.package.regex-automata]
+opt-level = 3
+
+[profile.dev.package.regex-syntax]
+opt-level = 3

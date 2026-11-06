@@ -492,7 +492,7 @@ jobs:
         if: steps.decide.outputs.build == 'true'
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: 1.98.0
+          toolchain: 1.98.1
 
       # Ubuntu runners restrict unprivileged user namespaces through AppArmor, which rootlesskit
       # needs; the Swarm test deploys into this throwaway runner's own swarm. As in ci.yaml.

@@ -198,9 +198,9 @@ mod tests {
                 error.to_string(),
                 format!(
                     "swarm-rootless-docker {} ({}, {})\n",
-                    version::VERSION,
-                    version::COMMIT,
-                    version::DATE
+                    version::BUILD.version,
+                    version::BUILD.commit,
+                    version::BUILD.date
                 ),
                 "{flag}"
             );

@@ -26,12 +26,14 @@
 //! JSON. Stdout carries the daemon's stdout, unmixed.
 //!
 //! The writes go through a [`Lane`], so a stderr nobody reads never blocks the runtime; while
-//! its queue is full, events are dropped.
+//! its queue is full, events are dropped. The subscriber is rust-common's `tracing-setup`, with
+//! the target and the JSON span fields shown; the flags, the errors and the writer are here.
 
 use std::io;
 
-use tracing::Subscriber;
+use tracing::Dispatch;
 use tracing::level_filters::LevelFilter;
+use tracing_setup::Options;
 use tracing_subscriber::fmt::MakeWriter;
 
 use crate::output::Lane;
@@ -84,55 +86,33 @@ pub enum InitError {
 /// An [`InitError`] when one is already installed or the writer cannot start.
 pub fn init(level: LogLevel, format: LogFormat) -> Result<Lane, InitError> {
     let lane = Lane::spawn("log", io::stderr()).map_err(InitError::Writer)?;
-    tracing::subscriber::set_global_default(subscriber(level, format, lane.clone()))
+    tracing_setup::install_global(subscriber(level, format, lane.clone()))
         .map_err(|_| InitError::Installed)?;
     Ok(lane)
 }
 
 /// The subscriber [`init`] installs, writing to `writer`; tests install it in a scope.
-pub fn subscriber<Writer>(
-    level: LogLevel,
-    format: LogFormat,
-    writer: Writer,
-) -> Box<dyn Subscriber + Send + Sync>
+pub fn subscriber<Writer>(level: LogLevel, format: LogFormat, writer: Writer) -> Dispatch
 where
     Writer: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
 {
-    let builder = tracing_subscriber::fmt()
-        .with_max_level(LevelFilter::from(level))
-        .with_ansi(false)
-        .with_writer(writer);
-    match format {
-        LogFormat::Text => Box::new(builder.finish()),
-        LogFormat::Json => Box::new(builder.json().flatten_event(true).finish()),
-    }
+    let format = match format {
+        LogFormat::Text => tracing_setup::Format::Text,
+        LogFormat::Json => tracing_setup::Format::Json,
+    };
+    tracing_setup::build(writer, format, LevelFilter::from(level), Options::new())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use tracing_setup::testing::Capture;
 
     use super::*;
 
-    #[derive(Clone, Default)]
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-
-    impl io::Write for Captured {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
     fn capture(level: LogLevel, format: LogFormat, emit: impl FnOnce()) -> String {
-        let captured = Captured::default();
-        let writer = captured.clone();
-        tracing::subscriber::with_default(subscriber(level, format, move || writer.clone()), emit);
-        String::from_utf8(captured.0.lock().unwrap().clone()).unwrap()
+        let captured = Capture::default();
+        tracing::dispatcher::with_default(&subscriber(level, format, captured.clone()), emit);
+        captured.text()
     }
 
     #[test]
@@ -164,5 +144,20 @@ mod tests {
         assert_eq!(line["message"], "created the daemon");
         assert_eq!(line["daemon"], "abc");
         assert_eq!(line["level"], "INFO");
+    }
+
+    /// The JSON line names its target and, under a span, the current span and the span list, so
+    /// a change in tracing-setup's defaults that hid either is caught here.
+    #[test]
+    fn json_names_the_target_and_the_spans() {
+        let output = capture(LogLevel::Info, LogFormat::Json, || {
+            let span = tracing::info_span!("launch", daemon = "abc");
+            let _entered = span.enter();
+            tracing::info!("created the daemon");
+        });
+        let line: serde_json::Value = serde_json::from_str(output.lines().next().unwrap()).unwrap();
+        assert_eq!(line["target"], module_path!());
+        assert_eq!(line["span"]["name"], "launch");
+        assert_eq!(line["spans"][0]["daemon"], "abc");
     }
 }
