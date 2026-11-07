@@ -533,6 +533,30 @@ jobs:
             docker image rm "$IMAGE" "$LOCAL_IMAGE@$platform" > /dev/null
           done 3< "$VARIANTS_FILE"
 
+      # The built binary says which release it is. The labels above are the build arguments, read
+      # back; this runs the binary, so a version module that stops reading its stamps fails here,
+      # before any tag exists. The image is amd64 only, so no emulation is needed.
+      - name: Smoke-test the built images' version stamps
+        if: steps.decide.outputs.build == 'true'
+        env:
+          BUILD_DATE: ${{ steps.commit.outputs.build_date }}
+        run: |
+          set -euo pipefail
+          WANT="swarm-rootless-docker $VERSION ($SHA, $BUILD_DATE)"
+          while IFS=$'\t' read -r -u 3 uid gid action digest platform; do
+            if [ "$action" != "build" ]; then
+              continue
+            fi
+            docker pull "$LOCAL_IMAGE@$platform" > /dev/null
+            GOT=$(docker run --rm --network none "$LOCAL_IMAGE@$platform" --version < /dev/null)
+            docker image rm "$LOCAL_IMAGE@$platform" > /dev/null
+            if [ "$GOT" != "$WANT" ]; then
+              echo "uid $uid prints '$GOT', want '$WANT'. Nothing was tagged or published." >&2
+              exit 1
+            fi
+            echo "uid $uid: $GOT"
+          done 3< "$VARIANTS_FILE"
+
       - name: Install Trivy
         if: steps.decide.outputs.build == 'true'
         uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
@@ -779,6 +803,24 @@ jobs:
           if ! .github/scripts/scan-findings.sh "$IMAGE_REPO@$DIGEST" "docker.io/library/docker@$BASE"; then
             echo "::warning::The reused $IMAGE_REPO@$DIGEST adds fixable HIGH or CRITICAL findings to its base, or could not be scanned. It is already published and was not changed."
           fi
+
+      # The reused image is already tagged, so this stops nothing from being pushed; it makes a
+      # rerun that reuses an image say whether the binary carries this release's version and
+      # commit. The build date is not known here, so it is not compared.
+      - name: Smoke-test the reused image's version stamps
+        if: matrix.variant.action == 'reuse'
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          GOT=$(docker run --rm --network none "$IMAGE_REPO@$DIGEST" --version < /dev/null)
+          case "$GOT" in
+            "swarm-rootless-docker $VERSION ($SHA, "*")") echo "$GOT" ;;
+            *)
+              echo "The reused $IMAGE_REPO@$DIGEST prints '$GOT', want version $VERSION and commit $SHA. It needs a human." >&2
+              exit 1
+              ;;
+          esac
 
       - name: Tag the image with the version
         if: matrix.variant.action == 'build'
