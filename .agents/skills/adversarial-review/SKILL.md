@@ -173,7 +173,7 @@ it, report it; if not, dig once more, then drop it. No named input and wrong res
 | Rust, `Cargo.*`, `deny.toml` | `make verify`; `make rust-deny` for dependency changes |
 | `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |
 | a workflow | `make check` (actionlint), then reason through each trigger it has: pull request, push, dispatch, schedule |
-| `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
+| `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | the launcher, the spec, the probe or the image | the integration tests (`SRD_IT=1`) on a host with Docker |
 
 Say which gates you could not run rather than implying they passed.

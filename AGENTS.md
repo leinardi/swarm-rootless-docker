@@ -178,7 +178,7 @@ Run before considering an edit done. `make check` applies to every row.
 | the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
 | `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
-| `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
+| `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
 | `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build image-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
