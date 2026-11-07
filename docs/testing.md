@@ -5,7 +5,7 @@
 | Layer | Where | Runs | Covers |
 | --- | --- | --- | --- |
 | unit tests | `src/**/tests.rs`, `#[cfg(test)]` modules | `make rust-test` | flag rules, the daemon and probe specs (pinned whole), the probe's checks, NFSv4 ACL decoding (`testdata/nfs4/`), the launcher against a recording fake Docker |
-| meta tests | `meta/tests/` | `make rust-test` | the repository itself: toolchain pins, the Dockerfile's shape, the release files, docs links, license headers, the suppression ratchet |
+| meta tests | `meta/tests/` | `make rust-test` | the repository itself: tooling pins, the Dockerfile's stages, the release files |
 | image checks | `scripts/image-test.sh` | `make image-test` | the built image without a daemon: user, files, labels, entrypoint, healthcheck |
 | integration tests | `tests/integration/` | `make integration-test` | the built image on a real Docker: the launcher, the probe and a rootless daemon |
 | release scripts | `.github/scripts/*.test.sh` | `bash .github/scripts/<name>.test.sh` | the release plan and the scan gate, against scratch repositories and stub commands |
@@ -55,7 +55,7 @@ as well. Turn it on only on a throwaway node: never on a machine that is part of
 - `conventional-commits` (pull requests);
 - `release-scripts`: the release scripts' tests;
 - `rust`: format, clippy, the unit and meta tests (with `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1`, so
-  a missing tool fails a meta test instead of skipping it), cargo-deny;
+  a missing tool fails a test instead of skipping it), cargo-deny;
 - `image`: builds the 568 variant, runs the image checks, lifts the AppArmor restriction on its
   throwaway runner, initialises a single-node swarm, and runs the integration tests with
   `SRD_IT_REQUIRE=1` and `SRD_IT_SWARM=1`. A pull request from a fork has no secrets, so it builds

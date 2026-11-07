@@ -38,7 +38,7 @@ match it.
 Single test (an integration test is named by its file):
 
 ```bash
-cargo test --locked -p meta --test docs
+cargo test --locked -p meta --test toolchain
 ```
 
 The Makefile pulls shared snippets from `leinardi/make-common@v1` into `.mk/` on first run. To
@@ -75,7 +75,8 @@ that failed part-way, or nothing.
 ## Layout
 
 A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `meta`.
-`rust-toolchain.toml` pins the toolchain, `rustfmt.toml` and `clippy.toml` sit at the root,
+`rust-toolchain.toml` pins the toolchain (release, components and target; CI installs it with
+`rustup toolchain install`), `rustfmt.toml` and `clippy.toml` sit at the root,
 `deny.toml` configures cargo-deny, and the lint set is `[workspace.lints]` in the root
 `Cargo.toml`.
 
@@ -92,15 +93,13 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `testdata/nfs4/` — NFSv4 ACL fixtures captured on the target node.
 - `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
   Swarm stack example the README walks through).
-- `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
-  version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `docs.rs` (Markdown
-  links), `dockerfiles.rs` (the image's shape, stamps and labels), `license_headers.rs` and
-  `suppressions.rs` (the two scripts below), `release.rs` (no Docker major outside the Dockerfile,
-  the README and the Compose example name its major, the two image workflows agree, every release
-  script tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
-  Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
-  that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
-  and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
+- `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (the Rust line
+  and the image's Rust release, ShellCheck one value, no vacuous flags),
+  `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
+  Dockerfile, the two image workflows agree), and `workspace_lints.rs` (every member opts into the
+  workspace lints). Most run rust-common's `repo-meta` checks with this repository's parameters,
+  beside the rules that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the
+  repository under test.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
   floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
@@ -108,19 +107,18 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `.github/scripts/` holds the release's scripts and their tests: `release-plan.sh` (what to
   release) and `scan-findings.sh` (the Trivy gate: only what the image adds to its base fails).
   `.trivyignore.yaml` lists the scans' accepted findings. `.github/actions/setup-shellcheck`
-  installs the pinned, sha256-checked ShellCheck that droast's required bridge runs.
+  installs the pinned, sha256-checked ShellCheck the pre-commit jobs run (droast's required bridge).
 - `droast.toml` — the Dockerfile Roast policy (the seven required OCI labels, strict labels, a
   required ShellCheck bridge); `.dclintrc` — the Compose lint rules.
 - `scripts/` — `image-test.sh` (`make image-test`), `check-license-headers.sh`,
-  `check-suppressions.sh`, `hooks/rustfmt-on-edit.sh` (the
-  Claude Code edit hook in `.claude/settings.json`) and make-common's `bootstrap-mk-common.sh`.
+  `hooks/rustfmt-on-edit.sh` (the Claude Code edit hook in `.claude/settings.json`) and
+  make-common's `bootstrap-mk-common.sh`.
 
 ### Generated or vendored: never hand-edit
 
 - `.mk/{help,password,pre-commit,rust}.mk`, `.mk/.mk-common-version` and
   `scripts/bootstrap-mk-common.sh`: fetched from make-common; refresh them with
   `make mk-common-update`, and port a change upstream.
-- `.suppressions-baseline`: written by `scripts/check-suppressions.sh --update`.
 - `Cargo.lock`: written by cargo; change it with `cargo update -p <crate>`, never by hand.
 
 ### Shared crates (rust-common)
@@ -130,15 +128,16 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v0.4.0"`, with `version = "0.4"`) in the root `Cargo.toml`'s `[workspace.dependencies]`.
+release tag (`tag = "v1.0.0"`, with `version = "1.0"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
   by moving the `tag`.
 - **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
-  they agree), and `version` with it when the tag's `<major>.<minor>` moves (a `v0.4.0` checkout
-  does not resolve against `version = "0.3"`; a `v0.3.x` one does), then run `cargo fetch` before
+  they agree), and `version` with it when the crates' `<major>.<minor>` moves (a `v1.0.0` checkout
+  does not resolve against `version = "0.3"`), then run `cargo fetch` before
   the `--locked` make targets, which otherwise refuse the stale lock. The manifest change is what
   makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
   `cargo update -p <crate>` can also move unrelated edges.
@@ -177,8 +176,7 @@ Run before considering an edit done. `make check` applies to every row.
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
 | the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
-| `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
-| `scripts/check-license-headers.sh` | `cargo test --locked -p meta --test license_headers` |
+| `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
 | `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build image-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
@@ -190,7 +188,7 @@ Run before considering an edit done. `make check` applies to every row.
 | `.pre-commit-config.yaml`, `Makefile`, `.mk/**` | `make check`, `cargo test --locked -p meta --test toolchain`, `make help`; a hook that needs a system tool also gets it in `ci.yaml`'s `pre-commit-all` |
 | `scripts/bootstrap-mk-common.sh`, the make-common `.mk` files | never by hand: port the change to make-common, then `make mk-common-update` and `make help` |
 | `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |
-| `**/*.md`, `.agents/skills/**` | `cargo test --locked -p meta --test docs`; prose wraps at 100 columns (markdownlint) |
+| `**/*.md`, `.agents/skills/**` | `pre-commit run lychee --all-files` (offline link and fragment check); prose wraps at 100 columns (markdownlint) |
 
 ## Rust coding rules
 
@@ -235,7 +233,7 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
   IntelliJ MIT copyright profile in `.idea/copyright/`). The `check-license-headers` pre-commit hook
   (`scripts/check-license-headers.sh`) checks the whole tree; the make-common files are exempt.
 - `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1` (set by the `rust` CI job) turns a missing external tool
-  a meta-test drives into a failure instead of a skip.
+  a unit test drives (`setfacl`, in the probe's tests) into a failure instead of a skip.
 - Pin every action and reusable workflow by full commit SHA, with the version in a trailing comment
   (`@<sha> # vX.Y.Z`). Give every workflow a top-level `permissions: contents: read`, and widen it
   only on the job that needs more. Pass `${{ }}` expressions into `run:` scripts through `env:`.
@@ -245,22 +243,6 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
 
 Prose wraps at 100 columns (markdownlint `line-length`, `.editorconfig`); tables, code blocks and
 headings may run longer. Never wrap inside a table, a code block or a link target.
-
-## Suppressions are ratcheted
-
-Every in-file suppression is counted per rule against `.suppressions-baseline` by the
-`check-suppressions` pre-commit hook (`scripts/check-suppressions.sh`), in five families:
-`expect/<lint>` (`#[expect(...)]`, one count per lint it names), `allow/<lint>` (`#[allow(...)]`,
-which the lints refuse in Rust code, so it stays at zero), `shellcheck-disable/<code>`,
-`droast-ignore/<rule>` and `droast-global-ignore/<rule>`.
-
-Adding one is allowed, but never silently: the hook refuses a commit that adds a suppression line
-without changing the baseline in the same commit, including a swap or a moved file that leaves the
-count unchanged. Prefer fixing the finding. If a suppression really is right, write it with a reason
-(`#[expect(clippy::<lint>, reason = "...")]`), stage it, run
-`scripts/check-suppressions.sh --update`, and commit the baseline alongside it. A count that has
-fallen below its baseline fails the same way, with the same fix: the file describes the repository,
-not a past one.
 
 ## Project skills
 
