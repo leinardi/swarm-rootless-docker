@@ -94,10 +94,9 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
   version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `dockerfiles.rs`
-  (the image's shape, stamps and labels), `suppressions.rs` (the script below), `release.rs` (no
-  Docker major outside the Dockerfile, the README and the Compose example name its major, the two
-  image workflows agree, every release script tested in CI), and `workspace_lints.rs` (every member
-  opts into the workspace lints).
+  (the image's shape, stamps and labels), `release.rs` (no Docker major outside the Dockerfile, the
+  README and the Compose example name its major, the two image workflows agree, every release script
+  tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
   Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
   that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
   and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
@@ -112,15 +111,14 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 - `droast.toml` — the Dockerfile Roast policy (the seven required OCI labels, strict labels, a
   required ShellCheck bridge); `.dclintrc` — the Compose lint rules.
 - `scripts/` — `image-test.sh` (`make image-test`), `check-license-headers.sh`,
-  `check-suppressions.sh`, `hooks/rustfmt-on-edit.sh` (the
-  Claude Code edit hook in `.claude/settings.json`) and make-common's `bootstrap-mk-common.sh`.
+  `hooks/rustfmt-on-edit.sh` (the Claude Code edit hook in `.claude/settings.json`) and
+  make-common's `bootstrap-mk-common.sh`.
 
 ### Generated or vendored: never hand-edit
 
 - `.mk/{help,password,pre-commit,rust}.mk`, `.mk/.mk-common-version` and
   `scripts/bootstrap-mk-common.sh`: fetched from make-common; refresh them with
   `make mk-common-update`, and port a change upstream.
-- `.suppressions-baseline`: written by `scripts/check-suppressions.sh --update`.
 - `Cargo.lock`: written by cargo; change it with `cargo update -p <crate>`, never by hand.
 
 ### Shared crates (rust-common)
@@ -177,7 +175,6 @@ Run before considering an edit done. `make check` applies to every row.
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
 | the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
-| `scripts/check-suppressions.sh`, `.suppressions-baseline` | `cargo test --locked -p meta --test suppressions` |
 | `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
@@ -245,22 +242,6 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
 
 Prose wraps at 100 columns (markdownlint `line-length`, `.editorconfig`); tables, code blocks and
 headings may run longer. Never wrap inside a table, a code block or a link target.
-
-## Suppressions are ratcheted
-
-Every in-file suppression is counted per rule against `.suppressions-baseline` by the
-`check-suppressions` pre-commit hook (`scripts/check-suppressions.sh`), in five families:
-`expect/<lint>` (`#[expect(...)]`, one count per lint it names), `allow/<lint>` (`#[allow(...)]`,
-which the lints refuse in Rust code, so it stays at zero), `shellcheck-disable/<code>`,
-`droast-ignore/<rule>` and `droast-global-ignore/<rule>`.
-
-Adding one is allowed, but never silently: the hook refuses a commit that adds a suppression line
-without changing the baseline in the same commit, including a swap or a moved file that leaves the
-count unchanged. Prefer fixing the finding. If a suppression really is right, write it with a reason
-(`#[expect(clippy::<lint>, reason = "...")]`), stage it, run
-`scripts/check-suppressions.sh --update`, and commit the baseline alongside it. A count that has
-fallen below its baseline fails the same way, with the same fix: the file describes the repository,
-not a past one.
 
 ## Project skills
 
