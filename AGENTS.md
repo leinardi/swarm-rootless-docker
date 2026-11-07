@@ -38,7 +38,7 @@ match it.
 Single test (an integration test is named by its file):
 
 ```bash
-cargo test --locked -p meta --test docs
+cargo test --locked -p meta --test toolchain
 ```
 
 The Makefile pulls shared snippets from `leinardi/make-common@v1` into `.mk/` on first run. To
@@ -93,11 +93,11 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 - `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
-  version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `docs.rs` (Markdown
-  links), `dockerfiles.rs` (the image's shape, stamps and labels), `license_headers.rs` and
-  `suppressions.rs` (the two scripts below), `release.rs` (no Docker major outside the Dockerfile,
-  the README and the Compose example name its major, the two image workflows agree, every release
-  script tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
+  version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `dockerfiles.rs`
+  (the image's shape, stamps and labels), `suppressions.rs` (the script below), `release.rs` (no
+  Docker major outside the Dockerfile, the README and the Compose example name its major, the two
+  image workflows agree, every release script tested in CI), and `workspace_lints.rs` (every member
+  opts into the workspace lints).
   Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
   that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
   and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
@@ -190,7 +190,7 @@ Run before considering an edit done. `make check` applies to every row.
 | `.pre-commit-config.yaml`, `Makefile`, `.mk/**` | `make check`, `cargo test --locked -p meta --test toolchain`, `make help`; a hook that needs a system tool also gets it in `ci.yaml`'s `pre-commit-all` |
 | `scripts/bootstrap-mk-common.sh`, the make-common `.mk` files | never by hand: port the change to make-common, then `make mk-common-update` and `make help` |
 | `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |
-| `**/*.md`, `.agents/skills/**` | `cargo test --locked -p meta --test docs`; prose wraps at 100 columns (markdownlint) |
+| `**/*.md`, `.agents/skills/**` | `pre-commit run lychee --all-files` (offline link and fragment check); prose wraps at 100 columns (markdownlint) |
 
 ## Rust coding rules
 
