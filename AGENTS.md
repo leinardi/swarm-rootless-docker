@@ -94,9 +94,10 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
   version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `dockerfiles.rs`
-  (the image's shape, stamps and labels), `release.rs` (no Docker major outside the Dockerfile, the
-  README and the Compose example name its major, the two image workflows agree, every release script
-  tested in CI), and `workspace_lints.rs` (every member opts into the workspace lints).
+  (the image's stages, runtime rules and label build arguments), `release.rs` (no Docker major
+  outside the Dockerfile, the README and the Compose example name its major, the two image workflows
+  agree, every release script tested in CI), and `workspace_lints.rs` (every member opts into the
+  workspace lints).
   Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
   that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
   and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).

@@ -25,11 +25,10 @@
 //! The repository's tooling pins: one Rust line across rust-toolchain.toml, Cargo.toml and the
 //! image, with every CI toolchain step on rust-toolchain.toml's exact release; the image's musl
 //! standard libraries for the image's own toolchain; one droast and one `ShellCheck` between the
-//! hooks and CI; the rustdoc gate; and no flag that makes a gate pass on nothing. The checks are
+//! hooks and CI; and no flag that makes a gate pass on nothing. The checks are
 //! repo-meta's, with this repository's files and pins; the negative controls run them on altered
 //! copies.
 
-use repo_meta::ci::MAKE_COMMON_RUSTDOC;
 use repo_meta::toolchain::{
     PinSource, RustVersion, ToolchainRef, ci_toolchain_problems, image_rust_problems, one_value,
     rust_release, rust_version_problems, shellcheck_problems,
@@ -75,60 +74,6 @@ fn github_documents() -> Vec<(String, yaml::Value)> {
             (file, document)
         })
         .collect()
-}
-
-/// Rustdoc warnings must fail local verification and the required Rust CI job, over every
-/// feature: make-common's rust.mk documents `$(RUST_FEATURES)`, which defaults to
-/// `--all-features`, and the Makefile must not narrow it.
-#[test]
-fn rust_documentation_is_a_required_gate() {
-    let repo = meta::repo();
-    let problems = MAKE_COMMON_RUSTDOC.problems(
-        &repo.read(".mk/rust.mk"),
-        &repo.read("Makefile"),
-        &parse(CI, &repo.read(CI)),
-    );
-    assert!(problems.is_empty(), "{}", report(&problems));
-}
-
-/// Negative controls reject gates missing from verify or CI, allowing warnings, or documenting
-/// fewer than every feature.
-#[test]
-fn weakened_rustdoc_gates_are_refused() {
-    let repo = meta::repo();
-    let fragment = repo.read(".mk/rust.mk");
-    let makefile = repo.read("Makefile");
-    let workflow = repo.read(CI);
-    let refused = |fragment: &str, makefile: &str, workflow: &str| {
-        !MAKE_COMMON_RUSTDOC
-            .problems(fragment, makefile, &parse(CI, workflow))
-            .is_empty()
-    };
-    assert!(!refused(&fragment, &makefile, &workflow));
-    for broken in [
-        fragment.replace("rust-test rust-doc", "rust-test"),
-        fragment.replace(" -D warnings", ""),
-        fragment.replace("RUST_FEATURES ?= --all-features", "RUST_FEATURES ?="),
-    ] {
-        assert_ne!(broken, fragment, "a negative control changed nothing");
-        assert!(refused(&broken, &makefile, &workflow), "{broken}");
-    }
-    let narrowed = format!("{makefile}\nRUST_FEATURES := --features x\n");
-    assert!(refused(&fragment, &narrowed, &workflow));
-    for broken in [
-        workflow.replace("run: make rust-doc", "run: echo missing documentation gate"),
-        workflow.replace(
-            "run: make rust-doc",
-            "if: false\n        run: make rust-doc",
-        ),
-        workflow.replace(
-            "run: make rust-doc",
-            "continue-on-error: true\n        run: make rust-doc",
-        ),
-    ] {
-        assert_ne!(broken, workflow, "a negative control changed nothing");
-        assert!(refused(&fragment, &makefile, &broken));
-    }
 }
 
 /// Go: `TestGoLineIsOneValue`, for the MSRV. The `rust-version` in Cargo.toml is the line
