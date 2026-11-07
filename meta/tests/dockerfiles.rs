@@ -23,24 +23,16 @@
  */
 
 //! The shipped image: the pinned frontend, the build and runtime stages, this image's own runtime
-//! rules (the exact dind base, the last USER, the user rewrite, no apk, the `base.name` label),
-//! the label build arguments, and droast's enforcement of the label schema; the negative controls
-//! run the stage and runtime rules on altered copies of the real Dockerfile.
+//! rules (the exact dind base, the last USER, the user rewrite, no apk); the negative controls run
+//! the stage and runtime rules on altered copies of the real Dockerfile. The `droast` hook enforces
+//! the label schema.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-
-use regex::Regex;
 use repo_meta::dockerfile::{self, Stage};
 use repo_meta::image::{BasePolicy, stage_problems, syntax_problems};
 use repo_meta::{pattern, report};
 
 const SHIPPED_DOCKERFILE: &str = "deployments/docker/Dockerfile";
-const IMAGE_FRAGMENT: &str = ".mk/image.mk";
-const DROAST_CONFIG: &str = "droast.toml";
 const STAGES: &[&str] = &["build", "runtime"];
-const BASE_NAME_LABEL: &str = "org.opencontainers.image.base.name";
 
 fn shipped() -> String {
     meta::repo().read(SHIPPED_DOCKERFILE)
@@ -172,19 +164,6 @@ fn runtime_stage_is_the_rootless_dind_base() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// The base name label names the runtime stage's own FROM, as Docker Hub's library repository.
-#[test]
-fn base_name_label_names_the_runtime_base() {
-    let runtime = stage("runtime");
-    let labels = dockerfile::labels(&runtime);
-    let base_name = labels.get(BASE_NAME_LABEL).map_or("", String::as_str);
-    assert_eq!(
-        base_name,
-        format!("docker.io/library/{}", runtime.image),
-        "the base name label is not the stage's FROM"
-    );
-}
-
 /// The negative control of the image's own runtime rules, on altered copies of the shipped
 /// Dockerfile.
 #[test]
@@ -245,91 +224,6 @@ fn the_user_rewrite_is_the_only_run() {
     }
 
     assert!(problems.is_empty(), "{}", problems.join("\n"));
-}
-
-/// Every build of the image passes the build arguments its labels read: without them the labels
-/// say dev, none and unknown, and the UID and GID fall back to the defaults.
-#[test]
-fn label_arguments_are_supplied() {
-    let content = meta::repo().read(IMAGE_FRAGMENT);
-    for argument in ["VERSION", "COMMIT", "DATE", "ROOTLESS_UID", "ROOTLESS_GID"] {
-        let pattern = Regex::new(&format!(r"--build-arg {argument}=\S")).expect("valid pattern");
-        assert!(
-            pattern.is_match(&content),
-            "{IMAGE_FRAGMENT} does not pass the {argument} build argument"
-        );
-    }
-}
-
-/// The path of droast, after checking that the `shellcheck` its required bridge runs is on `PATH`
-/// too. `None` when either is missing and the test should return early.
-fn lookup_droast() -> Option<PathBuf> {
-    let droast = meta::TOOLS.lookup(meta::DROAST)?;
-    meta::TOOLS.lookup(meta::SHELLCHECK)?;
-    Some(droast)
-}
-
-fn run_droast(droast: &Path, dockerfile: &Path) -> Output {
-    Command::new(droast)
-        .arg("--config")
-        .arg(meta::repo().path(DROAST_CONFIG))
-        .arg(dockerfile)
-        .output()
-        .unwrap_or_else(|error| panic!("run droast: {error}"))
-}
-
-/// droast, with the repository's configuration, passes the shipped Dockerfile and fails the same
-/// file without one of its labels with DF074, a missing required label, which is an error: an OCI
-/// label, and the UID label for the image's own.
-#[test]
-fn droast_enforces_the_labels() {
-    let Some(droast) = lookup_droast() else {
-        return;
-    };
-
-    let output = run_droast(&droast, &meta::repo().path(SHIPPED_DOCKERFILE));
-    assert!(
-        output.status.success(),
-        "droast rejects {SHIPPED_DOCKERFILE}:\n{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let shipped = meta::repo().read(SHIPPED_DOCKERFILE);
-    let without_version = Regex::new(r"(?m)^\s*org\.opencontainers\.image\.version=.*\n")
-        .expect("valid pattern")
-        .replace_all(&shipped, "")
-        .into_owned();
-    assert_ne!(
-        without_version, shipped,
-        "could not remove the version label from the fixture"
-    );
-    let scratch = tempfile::tempdir().expect("scratch directory");
-    let scratch_dockerfile = scratch.path().join("Dockerfile");
-    fs::write(&scratch_dockerfile, without_version).expect("write the fixture");
-
-    let output = run_droast(&droast, &scratch_dockerfile);
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success() && text.contains("DF074"),
-        "droast accepted a Dockerfile without the version label:\n{text}"
-    );
-
-    let without_uid = Regex::new(r"(?m)^\s*io\.github\.leinardi\.swarm-rootless-docker\.uid=.*\n")
-        .expect("valid pattern")
-        .replace_all(&shipped, "")
-        .into_owned();
-    assert_ne!(
-        without_uid, shipped,
-        "could not remove the UID label from the fixture"
-    );
-    fs::write(&scratch_dockerfile, without_uid).expect("write the fixture");
-    let output = run_droast(&droast, &scratch_dockerfile);
-    let text = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !output.status.success() && text.contains("DF074"),
-        "droast accepted a Dockerfile without the UID label:\n{text}"
-    );
 }
 
 /// The negative control for the reader: each

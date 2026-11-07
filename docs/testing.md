@@ -55,7 +55,7 @@ as well. Turn it on only on a throwaway node: never on a machine that is part of
 - `conventional-commits` (pull requests);
 - `release-scripts`: the release scripts' tests;
 - `rust`: format, clippy, the unit and meta tests (with `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1`, so
-  a missing tool fails a meta test instead of skipping it), cargo-deny;
+  a missing tool fails a test instead of skipping it), cargo-deny;
 - `image`: builds the 568 variant, runs the image checks, lifts the AppArmor restriction on its
   throwaway runner, initialises a single-node swarm, and runs the integration tests with
   `SRD_IT_REQUIRE=1` and `SRD_IT_SWARM=1`. A pull request from a fork has no secrets, so it builds

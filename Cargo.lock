@@ -698,7 +698,6 @@ version = "0.0.0"
 dependencies = [
  "regex",
  "repo-meta",
- "tempfile",
  "testenv-core",
  "toml",
 ]

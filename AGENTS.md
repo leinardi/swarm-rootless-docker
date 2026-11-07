@@ -95,13 +95,11 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (the Rust line
   and the image's Rust release, droast and ShellCheck each one value, no vacuous flags),
-  `dockerfiles.rs` (the image's stages, runtime rules and label build arguments), `release.rs` (no
-  Docker major outside the Dockerfile, the README and the Compose example name its major, the two
-  image workflows agree, every release script tested in CI), and `workspace_lints.rs` (every member
-  opts into the workspace lints).
-  Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
-  that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
-  and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
+  `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
+  Dockerfile, the two image workflows agree), and `workspace_lints.rs` (every member opts into the
+  workspace lints). Most run rust-common's `repo-meta` checks with this repository's parameters,
+  beside the rules that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the
+  repository under test.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
   floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
@@ -235,7 +233,7 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
   IntelliJ MIT copyright profile in `.idea/copyright/`). The `check-license-headers` pre-commit hook
   (`scripts/check-license-headers.sh`) checks the whole tree; the make-common files are exempt.
 - `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1` (set by the `rust` CI job) turns a missing external tool
-  a meta-test drives into a failure instead of a skip.
+  a unit test drives (`setfacl`, in the probe's tests) into a failure instead of a skip.
 - Pin every action and reusable workflow by full commit SHA, with the version in a trailing comment
   (`@<sha> # vX.Y.Z`). Give every workflow a top-level `permissions: contents: read`, and widen it
   only on the job that needs more. Pass `${{ }}` expressions into `run:` scripts through `env:`.

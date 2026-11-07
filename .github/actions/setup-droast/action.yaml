@@ -1,6 +1,6 @@
 name: "Set up droast"
 description: >-
-  Installs the Dockerfile Roast (droast) release binary the meta crate's Dockerfile test drives,
+  Installs the Dockerfile Roast (droast) release binary,
   verified against its published digest. The pre-commit hook builds its own from source.
 
 runs:
