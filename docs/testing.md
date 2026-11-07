@@ -5,7 +5,7 @@
 | Layer | Where | Runs | Covers |
 | --- | --- | --- | --- |
 | unit tests | `src/**/tests.rs`, `#[cfg(test)]` modules | `make rust-test` | flag rules, the daemon and probe specs (pinned whole), the probe's checks, NFSv4 ACL decoding (`testdata/nfs4/`), the launcher against a recording fake Docker |
-| meta tests | `meta/tests/` | `make rust-test` | the repository itself: toolchain pins, the Dockerfile's shape, the release files |
+| meta tests | `meta/tests/` | `make rust-test` | the repository itself: tooling pins, the Dockerfile's stages, the release files |
 | image checks | `scripts/image-test.sh` | `make image-test` | the built image without a daemon: user, files, labels, entrypoint, healthcheck |
 | integration tests | `tests/integration/` | `make integration-test` | the built image on a real Docker: the launcher, the probe and a rootless daemon |
 | release scripts | `.github/scripts/*.test.sh` | `bash .github/scripts/<name>.test.sh` | the release plan and the scan gate, against scratch repositories and stub commands |

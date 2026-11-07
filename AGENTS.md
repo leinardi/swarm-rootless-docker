@@ -75,7 +75,8 @@ that failed part-way, or nothing.
 ## Layout
 
 A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `meta`.
-`rust-toolchain.toml` pins the toolchain, `rustfmt.toml` and `clippy.toml` sit at the root,
+`rust-toolchain.toml` pins the toolchain (release, components and target; CI installs it with
+`rustup toolchain install`), `rustfmt.toml` and `clippy.toml` sit at the root,
 `deny.toml` configures cargo-deny, and the lint set is `[workspace.lints]` in the root
 `Cargo.toml`.
 
@@ -92,12 +93,12 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `testdata/nfs4/` — NFSv4 ACL fixtures captured on the target node.
 - `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
   Swarm stack example the README walks through).
-- `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (one Rust
-  version everywhere, pinned toolchain steps, one ShellCheck, no vacuous flags), `dockerfiles.rs`
-  (the image's stages, runtime rules and label build arguments), `release.rs` (no Docker major
-  outside the Dockerfile, the README and the Compose example name its major, the two image workflows
-  agree, every release script tested in CI), and `workspace_lints.rs` (every member opts into the
-  workspace lints).
+- `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (the Rust line
+  and the image's Rust release, droast and ShellCheck each one value, no vacuous flags),
+  `dockerfiles.rs` (the image's stages, runtime rules and label build arguments), `release.rs` (no
+  Docker major outside the Dockerfile, the README and the Compose example name its major, the two
+  image workflows agree, every release script tested in CI), and `workspace_lints.rs` (every member
+  opts into the workspace lints).
   Most run rust-common's `repo-meta` checks with this repository's parameters, beside the rules
   that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the repository under test,
   and `TOOLS`, the gate of the external tools they drive (testenv-core's `toolgate`).
@@ -129,15 +130,16 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v0.4.0"`, with `version = "0.4"`) in the root `Cargo.toml`'s `[workspace.dependencies]`.
+commit (`rev`, the full SHA, with `version = "0.4"`) in the root `Cargo.toml`'s
+`[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
-  by moving the `tag`.
-- **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
-  they agree), and `version` with it when the tag's `<major>.<minor>` moves (a `v0.4.0` checkout
-  does not resolve against `version = "0.3"`; a `v0.3.x` one does), then run `cargo fetch` before
+  by moving the `rev`.
+- **Moving the `rev`** needs the network: change it on every rust-common line (nothing checks that
+  they agree), and `version` with it when the crates' `<major>.<minor>` moves (a `0.4.0` checkout
+  does not resolve against `version = "0.3"`), then run `cargo fetch` before
   the `--locked` make targets, which otherwise refuse the stale lock. The manifest change is what
   makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
   `cargo update -p <crate>` can also move unrelated edges.
@@ -174,7 +176,7 @@ Run before considering an edit done. `make check` applies to every row.
 | --- | --- |
 | `**/*.rs` | `make verify`, then `make check-stage` |
 | `Cargo.toml`, `meta/Cargo.toml`, `Cargo.lock`, `deny.toml` | `make verify`, `make rust-deny` (network; the commit hook runs it too), `cargo test --locked -p meta --test toolchain --test workspace_lints` |
-| the rust-common `tag` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
+| the rust-common `rev` in the root `Cargo.toml` | `cargo fetch` (only rust-common lines change in `Cargo.lock`), then `make verify` and `make rust-deny`, with the network ([Shared crates](#shared-crates-rust-common)); the `[patch]` table and a patched `Cargo.lock` are never committed |
 | `rust-toolchain.toml`, `clippy.toml`, `rustfmt.toml` | `make verify`, `cargo test --locked -p meta --test toolchain` |
 | `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
