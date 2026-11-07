@@ -24,8 +24,8 @@
 
 //! The repository's tooling pins, each one value across the files that repeat it: the Rust line
 //! (rust-toolchain.toml, Cargo.toml and the image's base tag), the image's Rust release (the base
-//! tag and the `RUST_VERSION` argument the musl standard library is fetched for), droast and
-//! `ShellCheck` (the hooks and CI); and no flag that makes a gate pass on nothing. The pins are
+//! tag and the `RUST_VERSION` argument the musl standard library is fetched for), and
+//! `ShellCheck` (the hook and CI); and no flag that makes a gate pass on nothing. The pins are
 //! `repo_meta::toolchain::one_value`'s, with this repository's files; the negative controls run
 //! them on altered copies.
 
@@ -37,7 +37,6 @@ const TOOLCHAIN: &str = "rust-toolchain.toml";
 const CARGO: &str = "Cargo.toml";
 const DOCKERFILE: &str = "deployments/docker/Dockerfile";
 const PRE_COMMIT: &str = ".pre-commit-config.yaml";
-const SETUP_DROAST: &str = ".github/actions/setup-droast/action.yaml";
 const SETUP_SHELLCHECK: &str = ".github/actions/setup-shellcheck/action.yaml";
 const CI: &str = ".github/workflows/ci.yaml";
 
@@ -87,18 +86,6 @@ fn shellcheck_sources(hooks: &str, action: &str) -> [PinSource; 2] {
             action,
             r#"SHELLCHECK_VERSION:\s*["']?v(\d+\.\d+\.\d+)"#,
         ),
-    ]
-}
-
-/// The sources of the droast release.
-fn droast_sources(hooks: &str, action: &str) -> [PinSource; 2] {
-    [
-        PinSource::new(
-            PRE_COMMIT,
-            hooks,
-            r"repo: https://github\.com/immanuwell/dockerfile-roast\s+rev:\s*([\d.]+)",
-        ),
-        PinSource::new(SETUP_DROAST, action, r#"DROAST_VERSION:\s*["']?([\d.]+)"#),
     ]
 }
 
@@ -236,39 +223,7 @@ fn image_rust_release_control_fails_on_another_release() {
     assert_eq!(check(&altered(&dockerfile, &argument, "")), 1);
 }
 
-/// The meta crate's Dockerfile test runs the droast CI installs; it must be the release the
-/// pre-commit hook builds from source, whose rev Dependabot moves.
-#[test]
-fn droast_is_one_version() {
-    let repo = meta::repo();
-    let problems = one_value(
-        "droast",
-        &droast_sources(&repo.read(PRE_COMMIT), &repo.read(SETUP_DROAST)),
-        &[],
-    );
-    assert!(problems.is_empty(), "{}", report(&problems));
-}
-
-/// The negative control of the droast pin: a CI copy on another release, and a copy that writes
-/// none, are refused.
-#[test]
-fn droast_control_fails_on_another_version() {
-    let repo = meta::repo();
-    let hooks = repo.read(PRE_COMMIT);
-    let action = repo.read(SETUP_DROAST);
-    let release = pin_of(&action, r#"DROAST_VERSION:\s*["']?([\d.]+)"#);
-    let moved = altered(&action, &release, "0.0.1");
-    assert_eq!(
-        one_value("droast", &droast_sources(&hooks, &moved), &[]).len(),
-        1
-    );
-    assert_eq!(
-        one_value("droast", &droast_sources(&hooks, "env: {}\n"), &[]).len(),
-        1
-    );
-}
-
-/// droast's required shell-linter bridge runs the shellcheck CI installs, which must be the
+/// The shellcheck CI installs, which must be the
 /// release the shellcheck-py hook wraps.
 #[test]
 fn shellcheck_is_one_version() {

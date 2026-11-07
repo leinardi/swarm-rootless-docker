@@ -94,7 +94,7 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 - `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (the Rust line
-  and the image's Rust release, droast and ShellCheck each one value, no vacuous flags),
+  and the image's Rust release, ShellCheck one value, no vacuous flags),
   `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
   Dockerfile, the two image workflows agree), and `workspace_lints.rs` (every member opts into the
   workspace lints). Most run rust-common's `repo-meta` checks with this repository's parameters,
@@ -107,7 +107,7 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `.github/scripts/` holds the release's scripts and their tests: `release-plan.sh` (what to
   release) and `scan-findings.sh` (the Trivy gate: only what the image adds to its base fails).
   `.trivyignore.yaml` lists the scans' accepted findings. `.github/actions/setup-shellcheck`
-  installs the pinned, sha256-checked ShellCheck that droast's required bridge runs.
+  installs the pinned, sha256-checked ShellCheck the pre-commit jobs run (droast's required bridge).
 - `droast.toml` — the Dockerfile Roast policy (the seven required OCI labels, strict labels, a
   required ShellCheck bridge); `.dclintrc` — the Compose lint rules.
 - `scripts/` — `image-test.sh` (`make image-test`), `check-license-headers.sh`,
