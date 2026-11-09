@@ -9,16 +9,22 @@ assignees: []
 
 * [ ] I have checked that there are no duplicate active or recent issues (bugs, questions, or
   feature requests) describing this problem.
-* [ ] I am using the latest released version of this project (or have tested on the main/default
-  branch).
+* [ ] I am using the latest release (`ghcr.io/leinardi/swarm-rootless-docker:<major>-uid<UID>`,
+  or its `vX.Y.Z-uid<UID>`), or have tested a build of `main`.
+* [ ] This is not a security vulnerability (those go through the private process in SECURITY.md).
 
 ## Step 2: Describe your environment
 
-* Project version / commit SHA: `?`
-* Operating system and version: `?`
-* Image tag and digest (`docker image inspect`), or `swarm-rootless-docker --version`: `?`
-* Docker version and host kernel (`docker version`, `uname -r`): `?`
-* Any relevant tooling or dependencies and versions: `?`
+<!-- The version is what `docker run --rm <image> --version` prints, or the image's
+org.opencontainers.image.version label. Never paste a secret, such as a registry token. -->
+
+* swarm-rootless-docker version and commit (`--version`), image tag and digest
+  (`docker image inspect`): `?`
+* How the launcher runs (Docker Swarm service, Docker Compose, other), its UID:GID variant and the
+  service's mounts (data root, socket directory, sources): `?`
+* Host Docker version (`docker version`), host kernel (`uname -r`) and the
+  `kernel.apparmor_restrict_unprivileged_userns` value, if set: `?`
+* Host operating system, architecture and the data root's file system (ext4, ZFS, NFS): `?`
 
 ## Step 3: Describe the problem
 
@@ -42,10 +48,11 @@ assignees: []
 
 ### Relevant code, configuration, or data
 
-<!-- Paste the smallest possible code or config snippet that reproduces the issue. -->
+<!-- Paste the smallest service definition or command line that reproduces the issue. Never
+paste a secret, such as a registry token. -->
 
-```text
-// Example snippet (replace with your own)
+```yaml
+# Example snippet (replace with your own)
 ```
 
 ### Error / log output

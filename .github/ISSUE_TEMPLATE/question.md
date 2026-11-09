@@ -43,11 +43,16 @@ assignees: []
 
 <!-- Fill in what makes sense for your question, or remove fields that don't apply. -->
 
-* Project version / commit SHA: `?`
-* Operating system and version: `?`
-* Image tag and digest (`docker image inspect`), or `swarm-rootless-docker --version`: `?`
-* Docker version and host kernel (`docker version`, `uname -r`): `?`
-* Any relevant tooling / dependencies and versions: `?`
+<!-- The version is what `docker run --rm <image> --version` prints, or the image's
+org.opencontainers.image.version label. Never paste a secret, such as a registry token. -->
+
+* swarm-rootless-docker version and commit (`--version`), image tag and digest
+  (`docker image inspect`): `?`
+* How the launcher runs (Docker Swarm service, Docker Compose, other), its UID:GID variant and the
+  service's mounts (data root, socket directory, sources): `?`
+* Host Docker version (`docker version`), host kernel (`uname -r`) and the
+  `kernel.apparmor_restrict_unprivileged_userns` value, if set: `?`
+* Host operating system, architecture and the data root's file system (ext4, ZFS, NFS): `?`
 
 ---
 
