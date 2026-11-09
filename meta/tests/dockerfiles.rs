@@ -56,9 +56,12 @@ fn stage(name: &str) -> Stage {
 /// digest, the last USER the rootless UID and GID, no apk, and the default UID and GID.
 fn local_runtime_problems(runtime: &Stage) -> Vec<String> {
     let mut problems = Vec::new();
-    if !pattern(r"^docker:\d+-dind-rootless$").is_match(&runtime.image) {
+    // The canonical repository: check-pinned-bases exempts it, as written, from the digest rule,
+    // and a bare docker:<tag> would need the whole docker namespace exempted.
+    if !pattern(r"^docker\.io/library/docker:\d+-dind-rootless$").is_match(&runtime.image) {
         problems.push(format!(
-            "the runtime stage is FROM {:?}, want docker:<major>-dind-rootless with no digest",
+            "the runtime stage is FROM {:?}, want docker.io/library/docker:<major>-dind-rootless \
+             with no digest",
             runtime.image
         ));
     }
@@ -124,29 +127,29 @@ fn stage_rules_refuse_altered_dockerfiles() {
     for (altered, want) in [
         (
             alter(
-                "FROM docker:29-dind-rootless AS runtime",
-                "FROM docker:29-dind-rootless@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS runtime",
+                "FROM docker.io/library/docker:29-dind-rootless AS runtime",
+                "FROM docker.io/library/docker:29-dind-rootless@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef AS runtime",
             ),
             1,
         ),
         (
             alter(
-                "FROM docker:29-dind-rootless AS runtime",
+                "FROM docker.io/library/docker:29-dind-rootless AS runtime",
                 "FROM $BASE AS runtime",
             ),
             1,
         ),
         (
             alter(
-                "FROM docker:29-dind-rootless AS runtime",
+                "FROM docker.io/library/docker:29-dind-rootless AS runtime",
                 "FROM docker:latest AS runtime",
             ),
             1,
         ),
         (
             alter(
-                "FROM docker:29-dind-rootless AS runtime",
-                "FROM docker:29-dind-rootless AS runtime\nFROM busybox:1.37 AS extra",
+                "FROM docker.io/library/docker:29-dind-rootless AS runtime",
+                "FROM docker.io/library/docker:29-dind-rootless AS runtime\nFROM busybox:1.37 AS extra",
             ),
             1,
         ),
@@ -175,8 +178,13 @@ fn local_runtime_rules_refuse_altered_dockerfiles() {
         ),
         alter("USER root\n", "USER root\nRUN apk add --no-cache curl\n"),
         alter(
+            "FROM docker.io/library/docker:29-dind-rootless AS runtime",
+            "FROM docker.io/library/docker:29-dind AS runtime",
+        ),
+        // The spelling v0.3.0 and earlier use: the same image, but not the canonical repository.
+        alter(
+            "FROM docker.io/library/docker:29-dind-rootless AS runtime",
             "FROM docker:29-dind-rootless AS runtime",
-            "FROM docker:29-dind AS runtime",
         ),
     ] {
         assert_eq!(

@@ -51,26 +51,32 @@ The image and its integration tests:
 
 ```bash
 make image-build            # the 568 variant (ROOTLESS_UID/ROOTLESS_GID); needs a dhi.io login
-make image-build-prebuilt   # the same from a binary built here, without dhi.io (fork CI)
-make image-test             # the built image without a daemon: user, files, labels, entrypoint
+make image-binary           # the static launcher the release ships, into target/image-context/out
+make image-build-prebuilt   # the image from that binary: the release's packaging path, no dhi.io
+make image-test             # the built image without a daemon (IMAGE_TEST_BINARY: compare its binary)
+make image-build-test       # image-build, then image-test (ordered, safe under make -j)
 make integration-test       # tests/integration.rs on this Docker; needs the AppArmor sysctl at 0
 ```
 
-In CI, `ci-result` is the one required check: it needs `pre-commit-all`, `conventional-commits`,
-`release-scripts`, `rust` and `image` (`ci.yaml`); the reviewdog jobs only annotate pull requests.
-`image` builds with the dhi.io login when the secret is there, and through `image-build-prebuilt`
-when it is not (a fork's pull request). `release-scripts` runs the tests of the release scripts:
+In CI, `ci-result` is the one required check, and the one the release gates on: it needs
+`pre-commit-all`, `conventional-commits`, `release-scripts`, `rust` and `image` (`ci.yaml`); the
+reviewdog jobs only annotate pull requests. `image` tests the release's packaging path for every
+variant: `make image-build-prebuilt`, `make image-test` with `IMAGE_TEST_BINARY` (the image's
+launcher must be that binary), and the integration tests; it needs no secret. `release-scripts`
+runs the release plan's tests:
 
 ```bash
 bash .github/scripts/release-plan.test.sh    # the release plan, against scratch repositories
-bash .github/scripts/scan-findings.test.sh   # the scan gate, against a stub trivy
 ```
 
 Releases are cut by `release.yaml`: daily on a schedule, or dispatched on `main` (with an
 explicit version for the first one, and a dry run first). `release-plan.sh` decides what a run
-releases: HEAD as a new version (only with `ci-result` green on that exact commit), the latest
-release's own commit as a patch when upstream's base has a new digest, the finishing of a release
-that failed part-way, or nothing.
+releases: HEAD as a new version, the latest release's own commit as a patch when upstream's base
+has a new digest, the finishing of a release that failed part-way, or nothing. Whatever it picks,
+`ci-result` must be green on that exact commit (gh-composite-actions' `require-ci-green`), and
+the release runs a smoke test and the Trivy gate rather than the suites CI ran, except in base
+mode and for a base digest no release was built on, where it runs the whole image suite
+([`docs/release.md`](docs/release.md)).
 
 ## Layout
 
@@ -94,20 +100,22 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 - `deployments/docker/` — the `Dockerfile` (the shipped image) and `docker-compose.yaml` (the
   Swarm stack example the README walks through).
 - `meta/` — the repository meta-tests, `publish = false`: `meta/tests/toolchain.rs` (the Rust line
-  and the image's Rust release, ShellCheck one value, no vacuous flags),
+  and the exact Rust release, ShellCheck one value, Trivy never pinned, no vacuous flags),
   `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
-  Dockerfile, the two image workflows agree), and `workspace_lints.rs` (every member opts into the
-  workspace lints). Most run rust-common's `repo-meta` checks with this repository's parameters,
-  beside the rules that are its own. `meta/src/lib.rs` holds what they share: `repo()`, the
-  repository under test.
+  Dockerfile, the image workflows agree on the variants, every variant scanned), and
+  `workspace_lints.rs` (every member opts into the workspace lints). Most run rust-common's
+  `repo-meta` checks with this repository's parameters, beside the rules that are its own.
+  `meta/src/lib.rs` holds what they share: `repo()`, the repository under test.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
   floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
   cargo-deny) and `pre-commit-warmup.yaml` (refreshes the pre-commit cache on `main`).
-  `.github/scripts/` holds the release's scripts and their tests: `release-plan.sh` (what to
-  release) and `scan-findings.sh` (the Trivy gate: only what the image adds to its base fails).
-  `.trivyignore.yaml` lists the scans' accepted findings. `.github/actions/setup-shellcheck`
-  installs the pinned, sha256-checked ShellCheck the pre-commit jobs run (droast's required bridge).
+  `.github/scripts/` holds the release's own script and its test: `release-plan.sh` (what to
+  release). The shared steps come from `leinardi/gh-composite-actions`, pinned by SHA:
+  `require-ci-green`, `require-job-success`, `check-pinned-bases`, `trivy-gate` (the Trivy gate,
+  with the base diff in base mode), `toolchain-record`/`toolchain-recover`, `setup-svu`,
+  `setup-cargo-deny` and `setup-shellcheck` (the pinned ShellCheck droast's required bridge runs).
+  `.trivyignore.yaml` lists the scans' accepted findings.
 - `droast.toml` — the Dockerfile Roast policy (the seven required OCI labels, strict labels, a
   required ShellCheck bridge); `.dclintrc` — the Compose lint rules.
 - `scripts/` — `image-test.sh` (`make image-test`), `check-license-headers.sh`,
@@ -179,12 +187,12 @@ Run before considering an edit done. `make check` applies to every row.
 | `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
-| `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build image-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
+| `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
 | `tests/integration/**`, the launcher's behaviour | `make integration-test` (the AppArmor sysctl at 0 for the run, then back to 1; `docs/testing.md`) |
 | `deployments/docker/docker-compose.yaml` | `make check` (dclint); `docker stack config -c deployments/docker/docker-compose.yaml` with `DOCKER_GID` set; keep the README's deployment section in step |
 | `.github/workflows/**`, `.github/actions/**`, `.github/dependabot.yml` | `pre-commit run actionlint --all-files`, `cargo test --locked -p meta --test toolchain --test release`; reason through each trigger the workflow has (pull request, push, dispatch, schedule) and keep `ci-result`'s `needs` complete; for `release.yaml`, dispatch a dry run |
 | `.github/scripts/**` | `bash .github/scripts/<script>.test.sh` for each script changed, `cargo test --locked -p meta --test release` |
-| `.trivyignore.yaml` | every entry scoped to paths, with a statement and an `expired_at`; scan the image with `.github/scripts/scan-findings.sh` |
+| `.trivyignore.yaml` | every entry scoped to paths, with a statement and an `expired_at`; scan the image with the latest Trivy and this file, as trivy-gate does (`trivy image --ignore-unfixed --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml`) |
 | `.pre-commit-config.yaml`, `Makefile`, `.mk/**` | `make check`, `cargo test --locked -p meta --test toolchain`, `make help`; a hook that needs a system tool also gets it in `ci.yaml`'s `pre-commit-all` |
 | `scripts/bootstrap-mk-common.sh`, the make-common `.mk` files | never by hand: port the change to make-common, then `make mk-common-update` and `make help` |
 | `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |
@@ -223,11 +231,11 @@ declares `[lints] workspace = true`, and every lint and test command runs worksp
 - **Version strings:** `src/version.rs` reads `SWARM_ROOTLESS_DOCKER_VERSION`,
   `SWARM_ROOTLESS_DOCKER_COMMIT` and `SWARM_ROOTLESS_DOCKER_DATE` at compile time (service-kit's
   `buildinfo!`), falling back to `dev`, `none` and `unknown`; an empty variable stamps the empty
-  string, and `long()` formats the version line here. `make rust-run` sets them from git, the
-  date from HEAD's commit (make-common's `.mk/rust.mk`, with
-  `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER` and `BUILD_DATE` in the Makefile), and so do
-  `make rust-dist` and `make image-build-prebuilt`; `make rust-build` builds unstamped, as the
-  tests do (`RUST_BUILD_ENV :=`).
+  string, and `long()` formats the version line here. `make rust-run` sets them from git, the date
+  from HEAD's commit (make-common's `.mk/rust.mk`, with `RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER`
+  and `BUILD_DATE` in the Makefile), and so do `make rust-dist`, `make image-binary` and
+  `make image-build-prebuilt`; `make rust-build` builds unstamped, as the tests do
+  (`RUST_BUILD_ENV :=`).
 - Every Rust and shell file, the Makefile and the repo-local `.mk` fragments carry the MIT license
   header, with the year of the file's first commit (copy it from any Rust or shell file, or use the
   IntelliJ MIT copyright profile in `.idea/copyright/`). The `check-license-headers` pre-commit hook

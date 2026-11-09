@@ -25,19 +25,27 @@
 # Checks a built image without starting a daemon: what the Dockerfile promises about the user,
 # its files, the labels, the entrypoint and the healthcheck.
 #
-#   scripts/image-test.sh IMAGE UID GID
+#   scripts/image-test.sh IMAGE UID GID [BINARY]
+#
+# With BINARY, the image's launcher must also be that file byte for byte (sha256): the prebuilt
+# image COPYs the binary make image-binary built, and this proves it is the one that shipped.
 #
 # Every check runs; the script exits 1 if any failed, naming each.
 
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-	echo "usage: $0 IMAGE UID GID" >&2
+if [[ $# -ne 3 && $# -ne 4 ]]; then
+	echo "usage: $0 IMAGE UID GID [BINARY]" >&2
 	exit 2
 fi
 image="$1"
 uid="$2"
 gid="$3"
+expected_binary="${4:-}"
+if [[ -n "${expected_binary}" && ! -f "${expected_binary}" ]]; then
+	echo "${expected_binary} is not a file" >&2
+	exit 2
+fi
 binary=/usr/local/bin/swarm-rootless-docker
 failures=0
 
@@ -74,7 +82,7 @@ expect "gid label" "${gid}" "$(label io.github.leinardi.swarm-rootless-docker.gi
 # The base the Dockerfile names, so a new Docker major needs no change here.
 dockerfile="$(dirname "$0")/../deployments/docker/Dockerfile"
 base_image="$(awk 'toupper($1) == "FROM" && $NF == "runtime" { print $(NF - 2) }' "${dockerfile}")"
-expect "base name label" "docker.io/library/${base_image}" \
+expect "base name label" "docker.io/library/${base_image#docker.io/library/}" \
 	"$(label org.opencontainers.image.base.name)"
 expect "entrypoint" "[${binary}]" "$(docker image inspect "${image}" --format '{{.Config.Entrypoint}}')"
 expect "no command" "[]" "$(docker image inspect "${image}" --format '{{.Config.Cmd}}')"
@@ -99,6 +107,11 @@ if [[ "${uid}" != 1000 && "${gid}" != 1000 ]]; then
 fi
 expect "the ID maps belong to root" "0:0 0:0" \
 	"$(inspect_files 'stat -c %u:%g /usr/bin/newuidmap /usr/bin/newgidmap | xargs')"
+
+if [[ -n "${expected_binary}" ]]; then
+	expect "the binary is ${expected_binary}" "$(sha256sum <"${expected_binary}" | cut -d' ' -f1)" \
+		"$(inspect_files "sha256sum ${binary}" | cut -d' ' -f1)"
+fi
 
 # The binary itself: its version, and its usage (exit 2) for no argument or for the upstream
 # entrypoint's arguments, which must never start a daemon.
