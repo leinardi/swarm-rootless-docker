@@ -145,7 +145,7 @@ jobs:
       # release).
       - name: Install svu
         if: inputs.version == ''
-        uses: leinardi/gh-composite-actions/setup-svu@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/setup-svu@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
 
       # A schedule releases HEAD only when CI has already passed on it, and otherwise considers a
       # base rebuild of the latest release: this reads that once, without waiting. It is not the
@@ -156,7 +156,7 @@ jobs:
         id: head-ci
         if: github.event_name == 'schedule'
         continue-on-error: true # a schedule only asks whether HEAD is green yet; ci-green is the gate
-        uses: leinardi/gh-composite-actions/require-ci-green@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/require-ci-green@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           accepted-events: push
           # A schedule's event payload has no repository, so its default branch is named here.
@@ -231,7 +231,7 @@ jobs:
 
     steps:
       - name: Require CI green on the commit to release
-        uses: leinardi/gh-composite-actions/require-ci-green@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/require-ci-green@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           sha: ${{ needs.plan.outputs.sha }}
           accepted-events: push
@@ -262,7 +262,7 @@ jobs:
         run: rustup toolchain install --no-self-update
 
       - name: Set up cargo-deny
-        uses: leinardi/gh-composite-actions/setup-cargo-deny@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/setup-cargo-deny@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
 
       - name: Check the Rust dependencies with cargo-deny
         run: make rust-deny
@@ -360,7 +360,7 @@ jobs:
       # docker.io/library/docker, or docker for v0.3.0 and earlier (base_repo, which the plan only
       # takes in those two spellings).
       - name: Check the Dockerfile pins
-        uses: leinardi/gh-composite-actions/check-pinned-bases@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/check-pinned-bases@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           dockerfiles: deployments/docker/Dockerfile
           tag-only-images: |
@@ -484,7 +484,7 @@ jobs:
       # recover, and this is a no-op.
       - name: Recover the recorded toolchain
         if: steps.decide.outputs.build == 'true'
-        uses: leinardi/gh-composite-actions/toolchain-recover@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/toolchain-recover@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           toolchains: rust
           rust-targets: x86_64-unknown-linux-musl
@@ -506,7 +506,7 @@ jobs:
       - name: Record the toolchain
         id: toolchains
         if: steps.decide.outputs.build == 'true'
-        uses: leinardi/gh-composite-actions/toolchain-record@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/toolchain-record@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           toolchains: rust
 
@@ -813,7 +813,7 @@ jobs:
       # scanned by the publish job.
       - name: Scan the uid 568 image
         if: steps.images.outputs.uid568 != ''
-        uses: leinardi/gh-composite-actions/trivy-gate@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/trivy-gate@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           image: ${{ env.LOCAL_IMAGE }}@${{ steps.images.outputs.uid568 }}
           platform: ${{ env.PLATFORMS }}
@@ -896,7 +896,7 @@ jobs:
       # attempt's pass never counts, so a re-run uses "Re-run all jobs" - docs/release.md). A dry
       # run waits for it too, so it reports the audit a real run would face.
       - name: Require the audit to have passed
-        uses: leinardi/gh-composite-actions/require-job-success@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/require-job-success@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           job: audit
 
@@ -1055,7 +1055,7 @@ jobs:
         id: reuse-scan
         if: matrix.variant.action == 'reuse'
         continue-on-error: true # findings in an image already published are warnings
-        uses: leinardi/gh-composite-actions/trivy-gate@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        uses: leinardi/gh-composite-actions/trivy-gate@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
         with:
           image: ${{ env.IMAGE_REPO }}@${{ matrix.variant.digest }}
           platform: ${{ env.PLATFORMS }}
