@@ -54,7 +54,8 @@ whole.
 
 ## Releasing
 
-Nothing is released yet. The image release workflow (GHCR, per Docker major and UID, tested and
-scanned before it is tagged) lands together with the launcher and the image, and its procedure
-will be documented here and in `docs/release.md`. The first release needs an explicit version,
-since there is no tag to derive it from.
+`.github/workflows/release.yaml` releases the images (GHCR, per Docker major and UID, smoke-tested
+and scanned before the tag): daily on a schedule, or dispatched from `main`, and only once
+`ci-result` is green on the exact commit it releases. Nobody tags by hand; a failed release is
+finished by the next run. [`docs/release.md`](docs/release.md) has the procedure and what CI
+proves for it.
