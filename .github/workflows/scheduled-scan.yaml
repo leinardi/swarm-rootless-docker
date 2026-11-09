@@ -2,8 +2,10 @@ name: Scheduled scan
 
 # A release is scanned once, when it is built. Vulnerabilities are published every day, so the
 # images people pull and the dependencies on main are scanned again every week, with the release's
-# own scanner and gate. A failure fails the run, which is what makes it visible: fix it with a new
-# release.
+# own gates: trivy-gate (the latest Trivy, fixable HIGH and CRITICAL findings, .trivyignore.yaml)
+# and cargo-deny. A failure fails the run, which is what makes it visible: fix it with a new
+# release, or, for a finding only upstream's base can fix, a reviewed .trivyignore.yaml entry until
+# the daily base rebuild ships upstream's fix.
 on:
   schedule:
     # Mondays, 06:17 UTC: off the hour, when scheduled runs pile up.
@@ -18,29 +20,33 @@ permissions:
   contents: read
 
 env:
-  # Same values as release.yaml, changed together with it.
+  # Same values as release.yaml, changed together with it (meta/tests/release.rs).
   RELEASE_TAG_REGEX: '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
   IMAGE_REPO: ghcr.io/leinardi/swarm-rootless-docker
   IMAGE_VARIANTS: "568:568"
   PLATFORMS: linux/amd64
-  TRIVY_VERSION: v0.74.0
 
 jobs:
-  image:
+  # The floating <docker-major>-uid<UID> tags point at the highest release of each Docker major.
+  # Each is resolved here, once, by the version tag of that release to its index digest, so a tag
+  # that moves during the run cannot mix two releases into one result.
+  images:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read # the images, should the package not be public
+    outputs:
+      images: ${{ steps.images.outputs.images }}
 
     steps:
-      # release-plan.sh and the tags, to find what each floating tag points at; scan-findings.sh
-      # and .trivyignore.yaml, the release's gate and exceptions.
+      # release-plan.sh and the tags, to find what each floating tag points at.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
@@ -49,24 +55,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Trivy
-        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
-        with:
-          version: ${{ env.TRIVY_VERSION }}
-
-      # The floating <docker-major>-uid<UID> tags point at the highest release of each Docker
-      # major. Each is scanned by the version tag of that release, resolved once to its index
-      # digest, so a tag that moves during the run cannot mix two releases into one result, and
-      # against the base digest the image records.
-      - name: Scan the images behind the floating tags
+      - name: Resolve the images behind the floating tags
+        id: images
         run: |
           set -euo pipefail
           TAGS=$(git tag --list | { grep -E "$RELEASE_TAG_REGEX" || [ $? -eq 1 ]; })
-          if [ -z "$TAGS" ]; then
-            echo "::notice::Nothing is released yet."
-            exit 0
-          fi
-          FAILED=false
+          IMAGES='[]'
           for tag in $TAGS; do
             if [ "$(.github/scripts/release-plan.sh floating "$tag")" != "true" ]; then
               continue
@@ -74,18 +68,56 @@ jobs:
             for variant in $IMAGE_VARIANTS; do
               ref="$IMAGE_REPO:$tag-uid${variant%%:*}"
               DIGEST=$(docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' | jq -r '.digest')
-              BASE=$(docker buildx imagetools inspect "$IMAGE_REPO@$DIGEST" --format '{{json .Image}}' \
-                | jq -r '(if has("config") then . else .[] end) | .config.Labels["org.opencontainers.image.base.digest"]' \
-                | sort -u)
-              echo "Scanning $ref ($DIGEST), built on $BASE"
-              if ! .github/scripts/scan-findings.sh "$IMAGE_REPO@$DIGEST" "docker.io/library/docker@$BASE"; then
-                FAILED=true
+              if ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "$ref resolves to '$DIGEST', not an index digest." >&2
+                exit 1
               fi
+              echo "$ref: $DIGEST"
+              IMAGES=$(jq -c --arg name "$tag-uid${variant%%:*}" --arg digest "$DIGEST" \
+                '. + [{name: $name, digest: $digest}]' <<<"$IMAGES")
             done
           done
-          if [ "$FAILED" = "true" ]; then
-            exit 1
+          if [ "$IMAGES" = "[]" ]; then
+            echo "::notice::Nothing is released yet."
           fi
+          echo "images=$IMAGES" >> "$GITHUB_OUTPUT"
+
+  # The release's gate outside base mode, on each image: every fixable HIGH or CRITICAL finding
+  # fails, the base's included. Trivy is its latest release, never pinned, so every scan runs the
+  # newest checks.
+  image:
+    needs: images
+    if: needs.images.outputs.images != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read # the images, should the package not be public
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.images.outputs.images) }}
+
+    steps:
+      # For .trivyignore.yaml, the same exceptions the release scan accepts.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PLATFORMS is the one platform the release ships.
+      - name: Scan ${{ matrix.image.name }}
+        uses: leinardi/gh-composite-actions/trivy-gate@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+        with:
+          image: ${{ env.IMAGE_REPO }}@${{ matrix.image.digest }}
+          platform: ${{ env.PLATFORMS }}
 
   dependencies:
     runs-on: ubuntu-latest
@@ -94,9 +126,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # cargo-deny over main's dependencies, as ci.yaml's rust job runs it.
-      - name: Check the Rust dependencies with cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
-          command: check
+          persist-credentials: false
+
+      # cargo-deny reads the graph through cargo metadata, with the pinned toolchain.
+      - name: Set up Rust
+        run: rustup toolchain install --no-self-update
+
+      - name: Set up cargo-deny
+        uses: leinardi/gh-composite-actions/setup-cargo-deny@2115c9766c690e2e98afdeb64425c761aa86b072 # v1.4.0
+
+      # cargo-deny over main's dependencies, as the release's audit job and ci.yaml's rust job run
+      # it: a new advisory against a crate nobody touched shows up here.
+      - name: Check the Rust dependencies with cargo-deny
+        run: make rust-deny

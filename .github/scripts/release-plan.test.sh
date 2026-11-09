@@ -26,8 +26,9 @@
 # Tests for release-plan.sh, against scratch git repositories. Plain bash: stub gh, docker and svu
 # commands, first on PATH, answer from files in the scratch directory:
 #
-#   ci        "<sha> <state>[,<state>...]", the ci-result check runs of a commit, one state per
-#             lookup (the last repeats), each green, red, pending, missing, foreign or error
+#   ci        "<sha> <state>", what require-ci-green said about a commit (green, or red, pending
+#             or missing: not green); run_plan passes HEAD's as HEAD_CI, and the script itself
+#             never reads CI (release.yaml's ci-green job gates the planned commit)
 #   releases  "<tag> published|draft|error", the GitHub releases (a tag with no line has none)
 #   images    "<reference> <value>": for an upstream reference its index digest, for a published
 #             version its base digest label, "error", or "config-error" (the index reads, its
@@ -63,26 +64,6 @@ lookup() {
 	awk -v key="$2" '$1 == key { print $2; found = 1 } END { exit !found }' "${STUB_DIR}/$1" 2>/dev/null
 }
 case "$1" in
-api)
-	sha="$(sed -E 's#^repos/[^/]+/[^/]+/commits/([0-9a-f]+)/check-runs\?check_name=ci-result&filter=latest&per_page=100$#\1#' <<<"$2")"
-	[[ "${sha}" != "$2" ]] || { echo "stub gh: unexpected api call $2" >&2; exit 99; }
-	run() { printf '{"status":"%s","conclusion":%s,"app":{"slug":"%s"}}' "$1" "$2" "$3"; }
-	states="$(lookup ci "${sha}" || echo missing)"
-	calls="${STUB_DIR}/ci-calls-${sha}"
-	count=$(($(cat "${calls}" 2>/dev/null || echo 0) + 1))
-	echo "${count}" >"${calls}"
-	IFS=, read -r -a sequence <<<"${states}"
-	index=$((count <= ${#sequence[@]} ? count - 1 : ${#sequence[@]} - 1))
-	case "${sequence[${index}]}" in
-	green) runs="$(run completed '"success"' github-actions),$(run completed '"success"' github-actions)" ;;
-	red) runs="$(run completed '"success"' github-actions),$(run completed '"failure"' github-actions)" ;;
-	pending) runs="$(run in_progress null github-actions)" ;;
-	foreign) runs="$(run completed '"success"' some-other-app)" ;;
-	missing) runs="" ;;
-	*) echo "gh: HTTP 502" >&2; exit 1 ;;
-	esac
-	echo "{\"total_count\":1,\"check_runs\":[${runs}]}"
-	;;
 release)
 	[[ "$2" == view ]] || { echo "stub gh: unexpected release call $*" >&2; exit 99; }
 	case "$(lookup releases "$3" || echo absent)" in
@@ -142,8 +123,14 @@ new_repo() {
 	commit "feat(launcher): first" >/dev/null
 }
 
+# dockerfile MAJOR [legacy]: the runtime base in its canonical spelling, or as v0.3.0 and earlier
+# write it (docker:<major>-dind-rootless).
 dockerfile() {
-	printf 'FROM dhi.io/rust:1 AS build\nFROM docker:%s-dind-rootless AS runtime\n' "$1" >"${repo}/deployments/docker/Dockerfile"
+	local base="docker.io/library/docker"
+	if [[ "${2:-}" == legacy ]]; then
+		base=docker
+	fi
+	printf 'FROM dhi.io/rust:1 AS build\nFROM %s:%s-dind-rootless AS runtime\n' "${base}" "$1" >"${repo}/deployments/docker/Dockerfile"
 }
 
 commit() {
@@ -161,9 +148,16 @@ tag() {
 	git -C "${repo}" tag -a "$1" -m "$1" "${2:-HEAD}"
 }
 
+# tag_recorded VERSION COMMIT BASE_DIGEST BASELINE: the tag as release.yaml creates it, its
+# annotation carrying a toolchain line and the record subcommand's lines.
+tag_recorded() {
+	local lines
+	lines="$(env -i PATH="${PATH}" bash "${script}" record docker.io/library/docker:29-dind-rootless "$3" "$4")"
+	git -C "${repo}" tag -a "$1" -m "$(printf 'swarm-rootless-docker %s\n\nRust: 1.98.1\n%s' "$1" "${lines}")" "$2"
+}
+
 ci() {
 	sed -i "/^$1 /d" "${STUB_DIR}/ci"
-	rm -f "${STUB_DIR}/ci-calls-$1"
 	echo "$1 $2" >>"${STUB_DIR}/ci"
 }
 
@@ -181,13 +175,20 @@ upstream() {
 run_plan() {
 	out_file="${STUB_DIR}/output"
 	: >"${out_file}"
+	local head_ci
+	if [[ -v HEAD_CI_SET ]]; then
+		head_ci="${HEAD_CI_SET}"
+	elif [[ "$(awk -v key="$(head_sha)" '$1 == key { print $2 }' "${STUB_DIR}/ci")" == green ]]; then
+		head_ci=green
+	else
+		head_ci=not-green
+	fi
 	status=0
 	err="$(cd "${repo}" && env -i PATH="${work}/bin:${PATH}" HOME="${work}" STUB_DIR="${STUB_DIR}" \
 		GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-		EVENT="$1" VERSION_INPUT="${2:-}" REPOSITORY=leinardi/example IMAGE_REPO="${image_repo}" \
+		EVENT="$1" VERSION_INPUT="${2:-}" HEAD_CI="${head_ci}" REPOSITORY=leinardi/example IMAGE_REPO="${image_repo}" \
 		IMAGE_VARIANTS="${VARIANTS:-568:568}" RELEASE_TAG_REGEX='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
 		GITHUB_OUTPUT="${out_file}" GITHUB_STEP_SUMMARY="${STUB_DIR}/summary" \
-		CI_WAIT_SECONDS="${WAIT:-0}" CI_POLL_SECONDS=0.05 \
 		bash "${script}" plan 2>&1)" || status=$?
 	out="$(cat "${out_file}")"
 }
@@ -210,13 +211,23 @@ expect_plan() {
 		fail "${name}: exit ${status}: ${err}"
 		return
 	fi
-	for key in mode sha version previous major base_ref base_digest; do
-		want=""
-		for pair in "$@"; do
-			if [[ "${pair%%=*}" == "${key}" ]]; then
-				want="${pair#*=}"
-			fi
-		done
+	local -A given=()
+	for pair in "$@"; do
+		given["${pair%%=*}"]="${pair#*=}"
+	done
+	# Unless a case names them: the runtime FROM is the canonical base_ref, and only a base
+	# rebuild scans against its base digest.
+	if [[ ! -v given[base_from] ]]; then
+		given[base_from]="${given[base_ref]:-}"
+	fi
+	if [[ ! -v given[base_repo] && -n "${given[base_from]}" ]]; then
+		given[base_repo]="${given[base_from]%:*}"
+	fi
+	if [[ ! -v given[scan_baseline] && "${given[mode]:-}" == base ]]; then
+		given[scan_baseline]="docker.io/library/docker@${given[base_digest]}"
+	fi
+	for key in mode sha version previous major base_ref base_from base_repo base_digest full_suite scan_baseline; do
+		want="${given[${key}]:-}"
 		got="$(sed -n "s/^${key}=//p" <<<"${out}")"
 		if [[ "${got}" != "${want}" ]]; then
 			problems+=" ${key}='${got}' want '${want}';"
@@ -261,15 +272,15 @@ ci "${head}" green
 echo v0.2.0 >"${STUB_DIR}/svu_next"
 run_plan schedule
 expect_plan "schedule: releasable commits with green CI release HEAD" mode=head sha="${head}" version=v0.2.0 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=false
 
 run_plan workflow_dispatch
-expect_plan "dispatch: releasable commits with green CI release HEAD" mode=head sha="${head}" version=v0.2.0 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+expect_plan "dispatch: releasable commits release HEAD" mode=head sha="${head}" version=v0.2.0 \
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=false
 
 run_plan workflow_dispatch 1.0.0
 expect_plan "dispatch: an explicit higher version releases HEAD" mode=head sha="${head}" version=v1.0.0 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=false
 
 run_plan workflow_dispatch v0.0.9
 expect_refusal "dispatch: an explicit lower version is refused" "is not higher than the latest release v0.1.0"
@@ -279,6 +290,14 @@ expect_refusal "dispatch: a malformed version is refused" "no leading zeros"
 
 run_plan schedule 1.0.0
 expect_refusal "schedule: a version input is refused" "only a dispatch takes a version"
+
+# A base digest the previous release was not built on has had no release's whole suite yet.
+sed -i "s#^docker.io/library/docker:29-dind-rootless .*#docker.io/library/docker:29-dind-rootless ${d29b}#" "${STUB_DIR}/images"
+run_plan schedule
+expect_plan "schedule: HEAD on a base the previous release was not built on runs the full suite" mode=head \
+	sha="${head}" version=v0.2.0 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless \
+	base_digest="${d29b}" full_suite=true
+sed -i "s#^docker.io/library/docker:29-dind-rootless .*#docker.io/library/docker:29-dind-rootless ${d29a}#" "${STUB_DIR}/images"
 
 # A version from svu that is not a release tag, or not higher, is refused.
 echo v0.2.0-rc.1 >"${STUB_DIR}/svu_next"
@@ -299,7 +318,7 @@ expect_refusal "dispatch: the first release needs a version" "the first release 
 
 run_plan workflow_dispatch 0.1.0
 expect_plan "dispatch: the first release with a version" mode=head sha="${head}" version=v0.1.0 major=29 \
-	base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 
 run_plan schedule
 expect_plan "schedule: nothing before the first release" mode=none
@@ -311,62 +330,36 @@ tag v01.2.3
 run_plan schedule
 expect_plan "schedule: pre-release and malformed tags are not releases" mode=none
 
-# --- CI gating -----------------------------------------------------------------------------------
+# --- CI on HEAD ----------------------------------------------------------------------------------
 
+# Only a schedule reads it, as HEAD_CI: whether HEAD is released or only a base rebuild is
+# considered. A dispatch releases HEAD whatever CI says so far: the ci-green job waits for it.
 new_repo
 tag v0.1.0
 published v0.1.0 "${d29a}"
 upstream 29 "${d29a}"
 head="$(commit "fix(launcher): second")"
 echo v0.1.1 >"${STUB_DIR}/svu_next"
-for state in red pending missing foreign; do
-	sed -i "/^${head} /d" "${STUB_DIR}/ci"
+for state in red pending missing; do
 	ci "${head}" "${state}"
-	want_state="${state/foreign/missing}"
-	run_plan workflow_dispatch
-	expect_refusal "dispatch: ci-result ${state} refuses" "ci-result is ${want_state} on HEAD"
-	run_plan workflow_dispatch 0.2.0
-	expect_refusal "dispatch: ci-result ${state} refuses an explicit version" "ci-result is ${want_state} on"
 	run_plan schedule
-	expect_plan "schedule: ci-result ${state} with an unchanged base is a no-op" mode=none
-	expect_summary "schedule: ci-result ${state} is warned about" "but ci-result is ${want_state} on HEAD"
+	expect_plan "schedule: CI ${state} on HEAD with an unchanged base is a no-op" mode=none
+	expect_summary "schedule: CI ${state} on HEAD is warned about" "but ci-result is not green on HEAD"
+	run_plan workflow_dispatch
+	expect_plan "dispatch: CI ${state} so far still plans HEAD" mode=head sha="${head}" version=v0.1.1 \
+		previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=false
+	run_plan workflow_dispatch 0.2.0
+	expect_plan "dispatch: CI ${state} so far still plans an explicit version" mode=head sha="${head}" \
+		version=v0.2.0 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" \
+		full_suite=false
 done
-
-sed -i "/^${head} /d" "${STUB_DIR}/ci"
-ci "${head}" missing
-run_plan workflow_dispatch
-expect_refusal "dispatch: a missing ci-result says CI may still be running" "CI may still be running on it"
-sed -i "/^${head} /d" "${STUB_DIR}/ci"
-ci "${head}" pending
-run_plan workflow_dispatch
-expect_refusal "dispatch: a pending ci-result says CI is still running" "CI is still running on it"
-
-# A dispatch waits for CI that is still running, and fails only on red; a schedule does not wait.
-ci "${head}" missing,pending,pending,green
-WAIT=10 run_plan workflow_dispatch
-expect_plan "dispatch: waits for CI to finish green" mode=head sha="${head}" version=v0.1.1 previous=v0.1.0 \
-	major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
-ci "${head}" missing,pending,red
-WAIT=10 run_plan workflow_dispatch
-expect_refusal "dispatch: CI finishing red fails" "ci-result is red on HEAD"
-if grep -qF "after waiting" <<<"${err}"; then
-	fail "dispatch: a red ci-result is not a timeout: ${err}"
-fi
-ci "${head}" pending
-WAIT=1 run_plan workflow_dispatch
-expect_refusal "dispatch: CI still running when the wait ends fails" "CI is still running on it after waiting 1 s"
-ci "${head}" missing,green
-WAIT=10 run_plan workflow_dispatch 0.2.0
-expect_plan "dispatch: an explicit version waits for CI too" mode=head sha="${head}" version=v0.2.0 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
-ci "${head}" pending,green
-WAIT=10 run_plan schedule
-expect_plan "schedule: does not wait for CI" mode=none
-
-sed -i "/^${head} /d" "${STUB_DIR}/ci"
-ci "${head}" error
-run_plan schedule
-expect_refusal "schedule: an unreadable ci-result stops the run" "could not read ci-result"
+for value in "" maybe success; do
+	HEAD_CI_SET="${value}" run_plan schedule
+	expect_refusal "schedule: HEAD_CI '${value}' is refused" "HEAD_CI must be green or not-green"
+done
+HEAD_CI_SET="" run_plan workflow_dispatch
+expect_plan "dispatch: HEAD_CI is not read" mode=head sha="${head}" version=v0.1.1 previous=v0.1.0 major=29 \
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=false
 
 # --- base rebuilds -------------------------------------------------------------------------------
 
@@ -378,7 +371,7 @@ published v0.1.0 "${d29a}"
 upstream 29 "${d29b}"
 run_plan schedule
 expect_plan "schedule: a new upstream digest rebuilds the release" mode=base sha="${release_sha}" version=v0.1.1 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29b}"
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true
 
 run_plan workflow_dispatch
 expect_refusal "dispatch: a new upstream digest alone is nothing to bump" "nothing to bump"
@@ -387,7 +380,8 @@ expect_refusal "dispatch: a new upstream digest alone is nothing to bump" "nothi
 head="$(commit "docs(readme): words")"
 run_plan schedule
 expect_plan "schedule: the rebuild is of the release's commit, not HEAD" mode=base sha="${release_sha}" \
-	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29b}"
+	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" \
+	full_suite=true
 
 # Releasable commits with red CI wait; the base rebuild still happens.
 head="$(commit "feat(launcher): unreviewed")"
@@ -395,16 +389,8 @@ ci "${head}" red
 echo v0.2.0 >"${STUB_DIR}/svu_next"
 run_plan schedule
 expect_plan "schedule: red CI with a new base rebuilds the release" mode=base sha="${release_sha}" version=v0.1.1 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29b}"
-expect_summary "schedule: the skipped commits are warned about" "would release v0.2.0, but ci-result is red"
-
-# The release's commit must itself be green.
-sed -i "/^${release_sha} /d" "${STUB_DIR}/ci"
-ci "${release_sha}" red
-run_plan schedule
-expect_refusal "schedule: a base rebuild of a red commit is refused" "ci-result is red on ${release_sha}"
-sed -i "/^${release_sha} /d" "${STUB_DIR}/ci"
-ci "${release_sha}" green
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true
+expect_summary "schedule: the skipped commits are warned about" "would release v0.2.0, but ci-result is not green"
 
 # Docker 30 on HEAD, unreleased: the rebuild stays on the release's Docker 29.
 dockerfile 30
@@ -413,13 +399,13 @@ ci "${head}" red
 upstream 30 "${d30}"
 run_plan schedule
 expect_plan "schedule: 29 to 30, the rebuild stays on the release's 29" mode=base sha="${release_sha}" \
-	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29b}"
+	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" \
+	full_suite=true
 
-sed -i "/^${head} /d" "${STUB_DIR}/ci"
 ci "${head}" green
 run_plan schedule
 expect_plan "schedule: 29 to 30, a green HEAD releases on 30" mode=head sha="${head}" version=v0.2.0 \
-	previous=v0.1.0 major=30 base_ref=docker:30-dind-rootless base_digest="${d30}"
+	previous=v0.1.0 major=30 base_ref=docker.io/library/docker:30-dind-rootless base_digest="${d30}" full_suite=true
 
 # Every variant is compared: one on an old base is enough.
 new_repo
@@ -431,7 +417,7 @@ echo "${image_repo}:v0.1.0-uid1000 ${d29a}" >>"${STUB_DIR}/images"
 upstream 29 "${d29b}"
 VARIANTS="568:568 1000:1000" run_plan schedule
 expect_plan "schedule: one variant on an old base rebuilds" mode=base sha="${release_sha}" version=v0.1.1 \
-	previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29b}"
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true
 run_plan schedule
 expect_plan "schedule: the current base is a no-op" mode=none
 
@@ -455,13 +441,16 @@ run_plan schedule
 expect_refusal "schedule: a GHCR lookup error stops the run" "could not inspect ${image_repo}:v0.1.0-uid568"
 
 # A runtime stage that is not docker:<major>-dind-rootless.
-for from in "docker:29-dind-rootless@${d29a}" "docker:dind-rootless" "docker:29-dind"; do
+for from in "docker:29-dind-rootless@${d29a}" "docker:dind-rootless" "docker:29-dind" \
+	"docker.io/library/docker:29-dind-rootless@${d29a}" "docker.io/docker:29-dind-rootless" \
+	"library/docker:29-dind-rootless" "index.docker.io/library/docker:29-dind-rootless" \
+	"docker.io/library/docker:dind-rootless"; do
 	new_repo
 	printf 'FROM dhi.io/rust:1 AS build\nFROM %s AS runtime\n' "${from}" >"${repo}/deployments/docker/Dockerfile"
 	head="$(commit "feat(image): odd base")"
 	ci "${head}" green
 	run_plan workflow_dispatch 0.1.0
-	expect_refusal "dockerfile: FROM ${from} is refused" "want docker:<major>-dind-rootless"
+	expect_refusal "dockerfile: FROM ${from} is refused" "want docker.io/library/docker:<major>-dind-rootless"
 done
 new_repo
 printf 'FROM docker:29-dind-rootless AS build\nFROM docker:29-dind-rootless AS runtime\nFROM docker:29-dind-rootless AS runtime\n' \
@@ -476,32 +465,32 @@ expect_refusal "dockerfile: two runtime stages are refused" "exactly one stage n
 new_repo
 release_sha="$(head_sha)"
 tag v0.1.0
-ci "${release_sha}" green
 upstream 29 "${d29a}"
 head="$(commit "docs(readme): words")"
 run_plan schedule
 expect_plan "schedule: an unpublished latest release is finished" mode=recover sha="${release_sha}" version=v0.1.0 \
-	major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 run_plan workflow_dispatch
 expect_plan "dispatch: an unpublished latest release is finished" mode=recover sha="${release_sha}" version=v0.1.0 \
-	major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 
 echo "${image_repo}:v0.1.0-uid568 ${d29a}" >>"${STUB_DIR}/images"
 run_plan schedule
 expect_plan "schedule: a release with no GitHub release is finished" mode=recover sha="${release_sha}" \
-	version=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	version=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 echo "v0.1.0 draft" >>"${STUB_DIR}/releases"
 run_plan schedule
 expect_plan "schedule: a draft release is finished" mode=recover sha="${release_sha}" version=v0.1.0 major=29 \
-	base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 # The base a recovery builds on, and names, is the one its published images record.
 sed -i "s#^docker.io/library/docker:29-dind-rootless .*#docker.io/library/docker:29-dind-rootless ${d29b}#" "${STUB_DIR}/images"
 run_plan schedule
 expect_plan "schedule: a recovery keeps the base its images record" mode=recover sha="${release_sha}" \
-	version=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	version=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 VARIANTS="568:568 1000:1000" run_plan schedule
 expect_plan "schedule: a recovery builds the missing variant on the recorded base" mode=recover \
-	sha="${release_sha}" version=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	sha="${release_sha}" version=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" \
+	full_suite=true
 echo "${image_repo}:v0.1.0-uid1000 ${d29b}" >>"${STUB_DIR}/images"
 VARIANTS="568:568 1000:1000" run_plan schedule
 expect_refusal "schedule: variants on different bases are refused" "record the bases '${d29a} ${d29b}'"
@@ -525,24 +514,19 @@ expect_plan "schedule: a finished release is not recovered" mode=none
 # An explicit existing version is recovered from its own commit, wherever HEAD is.
 second_sha="$(commit "fix(launcher): second")"
 tag v0.1.1
-ci "${second_sha}" green
 published v0.1.1 "${d29a}"
 commit "docs(readme): more" >/dev/null
 run_plan workflow_dispatch 0.1.0
 expect_plan "dispatch: an explicit released version is recovered from its commit" mode=recover sha="${release_sha}" \
-	version=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
+	version=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" full_suite=true
 run_plan workflow_dispatch v0.1.1
 expect_plan "dispatch: the previous version of a recovery is the one below it" mode=recover sha="${second_sha}" \
-	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker:29-dind-rootless base_digest="${d29a}"
-sed -i "/^${second_sha} /d" "${STUB_DIR}/ci"
-ci "${second_sha}" red
-run_plan workflow_dispatch v0.1.1
-expect_refusal "dispatch: a recovery of a red commit is refused" "ci-result is red on ${second_sha}"
+	version=v0.1.1 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" \
+	full_suite=false
 
 # A latest release off HEAD's history is refused.
 new_repo
 tag v0.1.0
-ci "$(head_sha)" green
 published v0.1.0 "${d29a}"
 upstream 29 "${d29a}"
 git -C "${repo}" checkout -q -b side
@@ -552,6 +536,112 @@ published v0.2.0 "${d29a}"
 git -C "${repo}" checkout -q main
 run_plan schedule
 expect_refusal "schedule: a latest release off HEAD's history is refused" "not in HEAD's history"
+
+# --- the legacy base spelling --------------------------------------------------------------------
+
+# v0.3.0 and earlier write FROM docker:<major>-dind-rootless: a base rebuild or a recovery of them
+# resolves the canonical reference, and its build context names the FROM as that commit writes it.
+new_repo
+dockerfile 29 legacy
+release_sha="$(commit "fix(image): legacy spelling")"
+tag v0.1.0
+published v0.1.0 "${d29a}"
+upstream 29 "${d29b}"
+run_plan schedule
+expect_plan "legacy: a base rebuild of a docker:29 commit" mode=base sha="${release_sha}" version=v0.1.1 \
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless \
+	base_from=docker:29-dind-rootless base_repo=docker base_digest="${d29b}" full_suite=true
+run_plan workflow_dispatch 0.1.0
+expect_plan "legacy: a recovery of a docker:29 commit" mode=recover sha="${release_sha}" version=v0.1.0 \
+	major=29 base_ref=docker.io/library/docker:29-dind-rootless base_from=docker:29-dind-rootless \
+	base_repo=docker base_digest="${d29a}" full_suite=true
+dockerfile 29
+head="$(commit "feat(image): canonical spelling")"
+ci "${head}" green
+echo v0.2.0 >"${STUB_DIR}/svu_next"
+run_plan schedule
+expect_plan "legacy: HEAD in the canonical spelling after a legacy release" mode=head sha="${head}" \
+	version=v0.2.0 previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless \
+	base_digest="${d29b}" full_suite=true
+
+# --- the tag's record: a base rebuild that failed after its tag push -----------------------------
+
+new_repo
+release_sha="$(head_sha)"
+tag v0.1.0
+published v0.1.0 "${d29a}"
+upstream 29 "${d29b}"
+run_plan schedule
+expect_plan "record: the base rebuild" mode=base sha="${release_sha}" version=v0.1.1 previous=v0.1.0 major=29 \
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true
+# The release job tags it with the record and pushes the tag; the publish fails before any version
+# tag. Upstream moves on before the next run.
+tag_recorded v0.1.1 "${release_sha}" "${d29b}" "docker.io/library/docker@${d29b}"
+upstream_now="sha256:$(printf 'e%.0s' {1..64})"
+sed -i "s#^docker.io/library/docker:29-dind-rootless .*#docker.io/library/docker:29-dind-rootless ${upstream_now}#" "${STUB_DIR}/images"
+run_plan schedule
+expect_plan "record: the next run recovers on the recorded base, with the base diff restored" mode=recover \
+	sha="${release_sha}" version=v0.1.1 previous=v0.1.0 major=29 \
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true \
+	scan_baseline="docker.io/library/docker@${d29b}"
+run_plan workflow_dispatch v0.1.1
+expect_plan "record: a dispatched recovery restores it too" mode=recover sha="${release_sha}" version=v0.1.1 \
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" \
+	full_suite=true scan_baseline="docker.io/library/docker@${d29b}"
+# One variant published on the recorded base: the same plan. On another base: a human.
+echo "${image_repo}:v0.1.1-uid568 ${d29b}" >>"${STUB_DIR}/images"
+VARIANTS="568:568 1000:1000" run_plan schedule
+expect_plan "record: a partly published recovery keeps the recorded base and baseline" mode=recover \
+	sha="${release_sha}" version=v0.1.1 previous=v0.1.0 major=29 \
+	base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29b}" full_suite=true \
+	scan_baseline="docker.io/library/docker@${d29b}"
+sed -i "s#^${image_repo}:v0.1.1-uid568 .*#${image_repo}:v0.1.1-uid568 ${d29a}#" "${STUB_DIR}/images"
+VARIANTS="568:568 1000:1000" run_plan schedule
+expect_refusal "record: published images on another base than the tag records are refused" \
+	"are built on ${d29a}, but its tag records ${d29b}"
+
+# A head release's tag records no baseline: its recovery gates on every finding, as it did.
+new_repo
+tag v0.1.0
+published v0.1.0 "${d29a}"
+upstream 29 "${d29a}"
+head="$(commit "feat(launcher): second")"
+tag_recorded v0.2.0 "${head}" "${d29a}" ""
+run_plan schedule
+expect_plan "record: a head release's recovery has no baseline" mode=recover sha="${head}" version=v0.2.0 \
+	previous=v0.1.0 major=29 base_ref=docker.io/library/docker:29-dind-rootless base_digest="${d29a}" \
+	full_suite=false
+
+# Annotations that do not parse stop the run.
+for bad in "Base: docker.io/library/docker:30-dind-rootless@${d29a}" "Base: docker.io/library/docker:29-dind-rootless" \
+	"$(printf 'Base: docker.io/library/docker:29-dind-rootless@%s\nScan baseline: docker.io/library/docker@%s' "${d29a}" "${d29b}")" \
+	"Scan baseline: docker.io/library/docker@${d29a}" \
+	"$(printf 'Base: docker.io/library/docker:29-dind-rootless@%s\nBase: docker.io/library/docker:29-dind-rootless@%s' "${d29a}" "${d29a}")"; do
+	new_repo
+	git -C "${repo}" tag -a v0.1.0 -m "$(printf 'swarm-rootless-docker v0.1.0\n\n%s' "${bad}")"
+	upstream 29 "${d29a}"
+	run_plan schedule
+	expect_refusal "record: the annotation '${bad//$'\n'/ | }' is refused" "the tag v0.1.0"
+	[[ "${status}" -ne 0 && "${err}" == *"v0.1.0"* ]] || fail "record: '${bad}' failed for another reason: ${err}"
+done
+
+# The writer refuses what the reader would.
+for args in "docker:29-dind-rootless ${d29a} ''" "docker.io/library/docker:29-dind-rootless sha256:1 ''" \
+	"docker.io/library/docker:29-dind-rootless ${d29a} docker.io/library/docker@${d29b}"; do
+	status=0
+	got="$(eval "env -i PATH=\"\${PATH}\" bash \"\${script}\" record ${args}" 2>&1)" || status=$?
+	if [[ "${status}" -ne 0 && "${got}" == *"record:"* ]]; then
+		pass "record: the writer refuses ${args}"
+	else
+		fail "record: the writer took ${args}: exit ${status}, got '${got}'"
+	fi
+done
+got="$(env -i PATH="${PATH}" bash "${script}" record docker.io/library/docker:29-dind-rootless "${d29a}" "")"
+if [[ "${got}" == "Base: docker.io/library/docker:29-dind-rootless@${d29a}"$'\n'"Scan baseline: none" ]]; then
+	pass "record: the writer's lines"
+else
+	fail "record: the writer printed '${got}'"
+fi
 
 # --- floating ------------------------------------------------------------------------------------
 

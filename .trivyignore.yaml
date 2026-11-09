@@ -1,8 +1,46 @@
-# Trivy findings the release and scheduled scans accept. Both scans run with --ignore-unfixed, so
-# only a HIGH or CRITICAL vulnerability that has a fix somewhere upstream can fail them, and only
-# one the image adds to its base (.github/scripts/scan-findings.sh): upstream's own findings are
-# reported, never gated. An entry here is the only other exception. Every entry must say, in its
-# statement, why the finding does not apply or cannot be fixed here yet, carry an expiry date that
-# Trivy enforces (after which the finding fails the scans again), and be scoped to the paths it was
-# found in.
-vulnerabilities: []
+# Trivy findings the release and scheduled scans accept. Both scans run trivy-gate with
+# --ignore-unfixed, so only a HIGH or CRITICAL vulnerability that has a fix somewhere upstream can
+# fail them. Outside a base rebuild the gate counts every finding, upstream's base included; a base
+# rebuild compares the image with its base digest and fails only on what the image adds
+# (docs/release.md). An entry here is the only other exception, and every entry must say, in its
+# statement, why the finding does not apply or cannot be fixed here yet, and carry an expiry date
+# that Trivy enforces, after which the finding fails the scans again. Each entry is scoped to the
+# paths it was found in, so the same CVE in a file added later still fails.
+#
+# The entries below are in upstream's docker:29-dind-rootless: Go modules its binaries were built
+# with, which only upstream can rebuild. The image adds no package, the floating tag already
+# resolves to the newest digest (sha256:e3d0fa70055956693134873845b743bbe35b5199c68a52347032ae3e5dbac9a0
+# on 2026-11-09), and the daily base rebuild ships upstream's fix within a day of its release.
+# Review them when they expire: drop an entry the current digest no longer needs, otherwise extend
+# the date.
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - usr/local/bin/containerd-shim-runc-v2
+      - usr/local/bin/ctr
+      - usr/local/bin/rootlesskit
+      - usr/local/bin/runc
+      - usr/local/libexec/docker/cli-plugins/docker-buildx
+      - usr/local/libexec/docker/cli-plugins/docker-compose
+    statement: &upstream-go >-
+      A Go module upstream's docker:29-dind-rootless built this binary with; its newest digest
+      still carries it, and only upstream can rebuild the binary.
+    expired_at: 2026-11-23
+  - id: CVE-2026-78669
+    paths:
+      - usr/local/bin/containerd-shim-runc-v2
+      - usr/local/bin/ctr
+      - usr/local/bin/runc
+      - usr/local/libexec/docker/cli-plugins/docker-buildx
+    statement: *upstream-go
+    expired_at: 2026-11-23
+  - id: CVE-2026-46600
+    paths:
+      - usr/local/bin/runc
+    statement: *upstream-go
+    expired_at: 2026-11-23
+  - id: CVE-2026-17106
+    paths:
+      - usr/local/libexec/docker/cli-plugins/docker-buildx
+    statement: *upstream-go
+    expired_at: 2026-11-23

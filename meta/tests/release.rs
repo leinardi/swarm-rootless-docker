@@ -30,7 +30,9 @@ use repo_meta::yaml::{self, Value};
 
 const RELEASE: &str = ".github/workflows/release.yaml";
 const SCHEDULED_SCAN: &str = ".github/workflows/scheduled-scan.yaml";
+const CI: &str = ".github/workflows/ci.yaml";
 const HARNESS: &str = "tests/integration/harness.rs";
+const TRIVY_GATE: &str = "leinardi/gh-composite-actions/trivy-gate";
 
 /// The files that derive the Docker major from the Dockerfile of the commit they handle, and so
 /// must never name one: a literal would be wrong the day the Dockerfile moves to the next major,
@@ -38,8 +40,8 @@ const HARNESS: &str = "tests/integration/harness.rs";
 const MAJOR_FREE: &[&str] = &[
     RELEASE,
     SCHEDULED_SCAN,
+    CI,
     ".github/scripts/release-plan.sh",
-    ".github/scripts/scan-findings.sh",
     "scripts/image-test.sh",
 ];
 
@@ -49,8 +51,11 @@ const SHARED_ENV: &[&str] = &[
     "IMAGE_REPO",
     "IMAGE_VARIANTS",
     "PLATFORMS",
-    "TRIVY_VERSION",
 ];
+
+/// The settings CI's image job tests the release's packaging path with: every variant it ships,
+/// and the one the integration tests are written for.
+const CI_IMAGE_ENV: &[&str] = &["IMAGE_VARIANTS", "INTEGRATION_VARIANT"];
 
 fn re(pattern: &str) -> Regex {
     Regex::new(pattern).unwrap_or_else(|error| panic!("invalid pattern {pattern:?}: {error}"))
@@ -166,5 +171,205 @@ fn the_integration_variant_is_the_tested_one() {
         integration,
         format!("{uid}:{uid}"),
         "the integration tests assert UID {uid}"
+    );
+}
+
+/// CI's image job builds and tests every variant the release ships, through the same packaging
+/// path, and runs the integration tests on the same one.
+#[test]
+fn ci_tests_every_variant_the_release_ships() {
+    let release = workflow(RELEASE);
+    let ci = workflow(CI);
+    let problems: Vec<String> = CI_IMAGE_ENV
+        .iter()
+        .filter_map(|key| {
+            let shipped = env_value(RELEASE, &release, key);
+            let tested = ci["jobs"]["image"]["env"][key]
+                .as_str()
+                .unwrap_or_else(|| panic!("{CI}'s image job has no env {key}"));
+            (shipped != tested).then(|| {
+                format!("{key} is {shipped:?} in {RELEASE}, {tested:?} in {CI}'s image job")
+            })
+        })
+        .collect();
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The UIDs of `variants` (UID:GID pairs) whose built image no trivy-gate step of `release`
+/// scans: each variant's scan reads its platform digest from the `images` step's `uid<UID>`
+/// output, and a variant added without one would ship unscanned.
+fn unscanned_uids(release: &Value, variants: &str) -> Vec<String> {
+    let scanned: Vec<String> = yaml::action_steps(RELEASE, release)
+        .into_iter()
+        .filter(|step| step.action == TRIVY_GATE)
+        .filter_map(|step| step.with.get("image").cloned())
+        .collect();
+    variants
+        .split_whitespace()
+        .filter_map(|variant| variant.split_once(':').map(|(uid, _)| uid.to_owned()))
+        .filter(|uid| {
+            let output = format!("steps.images.outputs.uid{uid} }}}}");
+            !scanned.iter().any(|image| image.ends_with(&output))
+        })
+        .collect()
+}
+
+/// Every variant the release builds has a scan step of its own before the tag.
+#[test]
+fn every_released_variant_is_scanned() {
+    let release = workflow(RELEASE);
+    let variants = env_value(RELEASE, &release, "IMAGE_VARIANTS");
+    let unscanned = unscanned_uids(&release, &variants);
+    assert!(
+        unscanned.is_empty(),
+        "no trivy-gate step in {RELEASE} scans the variants with UID {unscanned:?}"
+    );
+}
+
+/// The negative control: a variant with no scan step is found, and the shipped one is not.
+#[test]
+fn an_unscanned_variant_is_recognized() {
+    let release = workflow(RELEASE);
+    let variants = env_value(RELEASE, &release, "IMAGE_VARIANTS");
+    assert_eq!(
+        unscanned_uids(&release, &format!("{variants} 1000:1000")),
+        ["1000"]
+    );
+}
+
+const DOCKERFILE: &str = "deployments/docker/Dockerfile";
+const CHECK_PINNED_BASES: &str = "leinardi/gh-composite-actions/check-pinned-bases";
+
+/// The repository the shipped Dockerfile's runtime stage is FROM, as written.
+fn runtime_repository(dockerfile: &str) -> String {
+    let from = re(r"(?m)^FROM\s+(\S+)\s+AS\s+runtime\s*$")
+        .captures(dockerfile)
+        .unwrap_or_else(|| panic!("{DOCKERFILE} has no FROM <image> AS runtime"))[1]
+        .to_owned();
+    from.rsplit_once(':')
+        .map_or(from.clone(), |(repository, _)| repository.to_owned())
+}
+
+/// What is wrong with the tag-only exemptions `workflow` passes to check-pinned-bases: exactly
+/// the dhi.io registry and `want`, the runtime base's repository as the Dockerfile writes it, so
+/// nothing else on Docker Hub may float by tag.
+fn tag_only_problems(file: &str, workflow: &Value, want: &str) -> Vec<String> {
+    let steps: Vec<_> = yaml::action_steps(file, workflow)
+        .into_iter()
+        .filter(|step| step.action == CHECK_PINNED_BASES)
+        .collect();
+    if steps.is_empty() {
+        return vec![format!("{file} has no check-pinned-bases step")];
+    }
+    steps
+        .iter()
+        .filter_map(|step| {
+            let mut entries: Vec<&str> = step
+                .with
+                .get("tag-only-images")
+                .map(|value| {
+                    value
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+            entries.sort_unstable();
+            let mut expected = vec!["dhi.io", want];
+            expected.sort_unstable();
+            (entries != expected).then(|| {
+                format!("{file}: check-pinned-bases exempts {entries:?}, want {expected:?}")
+            })
+        })
+        .collect()
+}
+
+/// CI exempts exactly the shipped runtime base's canonical repository from the digest rule, and
+/// the release the repository of the commit it builds, which the plan resolves (`base_repo`).
+#[test]
+fn the_tag_only_exemption_is_the_runtime_base() {
+    let repository = runtime_repository(&meta::repo().read(DOCKERFILE));
+    assert_eq!(repository, "docker.io/library/docker");
+    let mut problems = tag_only_problems(CI, &workflow(CI), &repository);
+    problems.extend(tag_only_problems(
+        RELEASE,
+        &workflow(RELEASE),
+        "${{ needs.plan.outputs.base_repo }}",
+    ));
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// The negative control: the bare docker namespace, or a missing entry, is refused.
+#[test]
+fn a_wider_tag_only_exemption_is_recognized() {
+    let ci = meta::repo().read(CI);
+    for (from, to) in [
+        (
+            "            docker.io/library/docker\n",
+            "            docker.io/library/docker\n            docker\n",
+        ),
+        (
+            "            docker.io/library/docker\n",
+            "            docker\n",
+        ),
+        ("            docker.io/library/docker\n", ""),
+    ] {
+        assert!(ci.contains(from), "{from:?} is gone from {CI}");
+        let altered = yaml::parse(CI, &ci.replacen(from, to, 1))
+            .unwrap_or_else(|problem| panic!("{problem}"));
+        assert_eq!(
+            tag_only_problems(CI, &altered, "docker.io/library/docker").len(),
+            1,
+            "{to:?}"
+        );
+    }
+}
+
+/// The musl target `make image-binary` builds for (`MUSL_TARGET`) is the one the release adds to
+/// the active toolchain in every mode, the one a recovered toolchain installs, and the one the
+/// legacy fallback builds: a commit whose rust-toolchain.toml lists no musl target (v0.3.0 and
+/// earlier) still builds.
+#[test]
+fn the_release_installs_the_musl_target_it_builds() {
+    let repo = meta::repo();
+    let target = repo_meta::toolchain::make_value(&repo.read(".mk/image.mk"), "MUSL_TARGET")
+        .expect(".mk/image.mk sets MUSL_TARGET");
+    let release_text = repo.read(RELEASE);
+    let release = workflow(RELEASE);
+    let add = format!("rustup target add {target}");
+    assert!(
+        release_text.lines().any(|line| line.trim() == add),
+        "{RELEASE} never runs `{add}`"
+    );
+    let recover: Vec<String> = yaml::action_steps(RELEASE, &release)
+        .into_iter()
+        .filter(|step| step.action == "leinardi/gh-composite-actions/toolchain-recover")
+        .map(|step| step.with.get("rust-targets").cloned().unwrap_or_default())
+        .collect();
+    assert_eq!(
+        recover,
+        std::slice::from_ref(&target),
+        "toolchain-recover's rust-targets"
+    );
+    assert!(
+        release_text.contains(&format!("--target {target} --bin swarm-rootless-docker")),
+        "the legacy fallback does not build for {target}"
+    );
+    let step_order: Vec<String> = yaml::jobs(&release)["release"]
+        .steps
+        .iter()
+        .filter_map(|step| step["name"].as_str().map(str::to_owned))
+        .collect();
+    let position = |name: &str| {
+        step_order
+            .iter()
+            .position(|step| step == name)
+            .unwrap_or_else(|| panic!("the release job has no step {name:?}"))
+    };
+    assert!(
+        position("Recover the recorded toolchain") < position("Add the musl target")
+            && position("Add the musl target") < position("Build the launcher binary"),
+        "the musl target is not added after the toolchain recovery and before the build"
     );
 }

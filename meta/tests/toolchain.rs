@@ -23,22 +23,30 @@
  */
 
 //! The repository's tooling pins, each one value across the files that repeat it: the Rust line
-//! (rust-toolchain.toml, Cargo.toml and the image's base tag), the image's Rust release (the base
-//! tag and the `RUST_VERSION` argument the musl standard library is fetched for), and
-//! `ShellCheck` (the hook and CI); and no flag that makes a gate pass on nothing. The pins are
-//! `repo_meta::toolchain::one_value`'s, with this repository's files; the negative controls run
-//! them on altered copies.
+//! (rust-toolchain.toml, Cargo.toml and the image's base tag), the exact Rust release
+//! (rust-toolchain.toml's channel, the base tag and the `RUST_VERSION` argument the musl standard
+//! library is fetched for), and `ShellCheck` (the hook and CI); Trivy is never pinned; and no flag
+//! makes a gate pass on nothing. The pins are `repo_meta::toolchain::one_value`'s, with this
+//! repository's files; the negative controls run them on altered copies.
 
-use repo_meta::report;
 use repo_meta::toolchain::{PinSource, one_value};
 use repo_meta::vacuous::{AllowedFragment, VacuousFlags};
+use repo_meta::{Problem, report};
 
 const TOOLCHAIN: &str = "rust-toolchain.toml";
 const CARGO: &str = "Cargo.toml";
 const DOCKERFILE: &str = "deployments/docker/Dockerfile";
 const PRE_COMMIT: &str = ".pre-commit-config.yaml";
-const SETUP_SHELLCHECK: &str = ".github/actions/setup-shellcheck/action.yaml";
 const CI: &str = ".github/workflows/ci.yaml";
+const RELEASE: &str = ".github/workflows/release.yaml";
+
+/// The `version` input of every gh-composite-actions setup-shellcheck step in CI.
+const SHELLCHECK_ACTION: &str =
+    r"setup-shellcheck@[0-9a-f]{40}[^\n]*\n\s*with:\s*\n\s*version:\s*v?(\d+\.\d+\.\d+)";
+
+/// A Trivy version written down anywhere under .github: trivy-gate's `trivy-version` input, a
+/// `TRIVY_VERSION`, or a setup-trivy step of its own.
+const TRIVY_PIN: &str = r"(?m)trivy-version:|TRIVY_VERSION|aquasecurity/setup-trivy";
 
 /// The `X.Y` line of the build stage's `dhi.io/rust` tag.
 const IMAGE_RUST_LINE: &str =
@@ -64,9 +72,12 @@ fn rust_line_sources(toolchain: &str, cargo: &str, dockerfile: &str) -> [PinSour
     ]
 }
 
-/// The sources of the image's Rust release, from the Dockerfile.
-fn image_release_sources(dockerfile: &str) -> [PinSource; 2] {
+/// The sources of the exact Rust release: rust-toolchain.toml's channel, and the image's tag and
+/// `RUST_VERSION` in the Dockerfile. The release builds the launcher with the first, the image's
+/// build stage with the other two.
+fn image_release_sources(toolchain: &str, dockerfile: &str) -> [PinSource; 3] {
     [
+        PinSource::rust_channel(TOOLCHAIN, toolchain),
         PinSource::rust_image_tag(DOCKERFILE, dockerfile),
         PinSource::rust_version_arg(DOCKERFILE, dockerfile),
     ]
@@ -74,18 +85,14 @@ fn image_release_sources(dockerfile: &str) -> [PinSource; 2] {
 
 /// The sources of the `ShellCheck` release, as `X.Y.Z`: shellcheck-py adds a fourth component of
 /// its own (v0.11.0.1), so only the first three are compared.
-fn shellcheck_sources(hooks: &str, action: &str) -> [PinSource; 2] {
+fn shellcheck_sources(hooks: &str, ci: &str) -> [PinSource; 2] {
     [
         PinSource::new(
             PRE_COMMIT,
             hooks,
             r"repo: https://github\.com/shellcheck-py/shellcheck-py\s+rev:\s*v(\d+\.\d+\.\d+)",
         ),
-        PinSource::new(
-            SETUP_SHELLCHECK,
-            action,
-            r#"SHELLCHECK_VERSION:\s*["']?v(\d+\.\d+\.\d+)"#,
-        ),
+        PinSource::new(CI, ci, SHELLCHECK_ACTION),
     ]
 }
 
@@ -183,30 +190,50 @@ fn pin_of(content: &str, pattern: &str) -> String {
         .to_owned()
 }
 
-/// The image's exact Rust release: the `dhi.io/rust` tag and the `RUST_VERSION` argument the musl
-/// standard library is fetched for are one value.
+/// The exact Rust release: rust-toolchain.toml's channel, the `dhi.io/rust` tag and the
+/// `RUST_VERSION` argument the musl standard library is fetched for are one value, so the
+/// launcher the release builds on the runner and the one `make image-build` builds in the image
+/// come from the same release.
 #[test]
 fn image_rust_release_is_one_value() {
-    let sources = image_release_sources(&meta::repo().read(DOCKERFILE));
-    let problems = one_value("the image's Rust release", &sources, &[]);
+    let repo = meta::repo();
+    let sources = image_release_sources(&repo.read(TOOLCHAIN), &repo.read(DOCKERFILE));
+    let problems = one_value("the Rust release", &sources, &[]);
     assert!(problems.is_empty(), "{}", report(&problems));
 }
 
-/// The negative control of the image's release: a tag and a `RUST_VERSION` that differ, and a
-/// Dockerfile with no `RUST_VERSION`, are refused.
+/// The negative control of the exact release: a tag and a `RUST_VERSION` that differ, a
+/// Dockerfile with no `RUST_VERSION`, and a toolchain on another patch of the same line (which
+/// the line check lets through) are refused.
 #[test]
 fn image_rust_release_control_fails_on_another_release() {
-    let dockerfile = meta::repo().read(DOCKERFILE);
+    let repo = meta::repo();
+    let toolchain = repo.read(TOOLCHAIN);
+    let dockerfile = repo.read(DOCKERFILE);
     let release = pin_of(&dockerfile, r"(?m)^ARG RUST_VERSION=(\S+)\s*$");
-    let check = |content: &str| {
+    let check_both = |toolchain: &str, content: &str| {
         one_value(
-            "the image's Rust release",
-            &image_release_sources(content),
+            "the Rust release",
+            &image_release_sources(toolchain, content),
             &[],
         )
         .len()
     };
+    let check = |content: &str| check_both(&toolchain, content);
     assert_eq!(check(&dockerfile), 0);
+    let line = pin_of(&toolchain, r#"(?m)^channel\s*=\s*"(\d+\.\d+)\.\d+""#);
+    assert_eq!(
+        check_both(
+            &altered(
+                &toolchain,
+                &format!("channel = \"{release}\""),
+                &format!("channel = \"{line}.99\"")
+            ),
+            &dockerfile
+        ),
+        1,
+        "a toolchain on another patch of the line is not refused"
+    );
     let argument = format!("ARG RUST_VERSION={release}\n");
     assert_eq!(
         check(&altered(&dockerfile, &argument, "ARG RUST_VERSION=1.0.0\n")),
@@ -230,7 +257,7 @@ fn shellcheck_is_one_version() {
     let repo = meta::repo();
     let problems = one_value(
         "ShellCheck",
-        &shellcheck_sources(&repo.read(PRE_COMMIT), &repo.read(SETUP_SHELLCHECK)),
+        &shellcheck_sources(&repo.read(PRE_COMMIT), &repo.read(CI)),
         &[],
     );
     assert!(problems.is_empty(), "{}", report(&problems));
@@ -242,19 +269,52 @@ fn shellcheck_is_one_version() {
 fn shellcheck_control_fails_on_another_version() {
     let repo = meta::repo();
     let hooks = repo.read(PRE_COMMIT);
-    let action = repo.read(SETUP_SHELLCHECK);
-    let check =
-        |action: &str| one_value("ShellCheck", &shellcheck_sources(&hooks, action), &[]).len();
-    assert_eq!(check(&action), 0);
+    let ci = repo.read(CI);
+    let check = |ci: &str| one_value("ShellCheck", &shellcheck_sources(&hooks, ci), &[]).len();
+    assert_eq!(check(&ci), 0);
     assert_eq!(
-        check(&altered(
-            &action,
-            "SHELLCHECK_VERSION: v0.11.0",
-            "SHELLCHECK_VERSION: v0.9.0"
-        )),
+        check(&altered(&ci, "version: v0.11.0", "version: v0.9.0")),
         1
     );
     assert_eq!(check("env: {}\n"), 1);
+}
+
+/// The Trivy pins under .github, one problem per file that writes one.
+fn trivy_pin_problems(files: &[(String, String)]) -> Vec<Problem> {
+    let pin = repo_meta::pattern(TRIVY_PIN);
+    files
+        .iter()
+        .filter(|(_, content)| pin.is_match(content))
+        .map(|(file, _)| {
+            Problem::at(
+                file,
+                "pins Trivy: trivy-gate installs its latest release, so every scan runs the newest \
+                 checks",
+            )
+        })
+        .collect()
+}
+
+/// Trivy is never pinned: every scan is trivy-gate's, at its default `latest`, and no workflow
+/// installs a Trivy of its own.
+#[test]
+fn trivy_is_never_pinned() {
+    let repo = meta::repo();
+    let problems = trivy_pin_problems(&repo.read_all(&github_yaml()));
+    assert!(problems.is_empty(), "{}", report(&problems));
+}
+
+/// The negative control: each way of pinning Trivy is found, in the file that writes it.
+#[test]
+fn trivy_pins_are_recognized() {
+    for sample in [
+        "        with:\n          trivy-version: 0.76.2\n",
+        "env:\n  TRIVY_VERSION: v0.76.2\n",
+        "      - uses: aquasecurity/setup-trivy@0000000000000000000000000000000000000000 # v0.3.1\n",
+    ] {
+        let problems = trivy_pin_problems(&[(RELEASE.to_owned(), sample.to_owned())]);
+        assert_eq!(problems.len(), 1, "{sample:?}: {}", report(&problems));
+    }
 }
 
 /// The flags this repository's gates may not carry: the core set and the Rust set, with the rule that a clippy run denies warnings.
@@ -264,7 +324,28 @@ fn vacuous_flags() -> VacuousFlags {
 
 /// The reviewed exceptions. Each must still match a line, so an entry cannot outlive the code it
 /// excuses and quietly cover a new line later.
-const ALLOWED: &[AllowedFragment<'static>] = &[];
+const ALLOWED: &[AllowedFragment<'static>] = &[
+    // pre-commit-all restores the rust job's Rust cache and never saves it, so one job writes it.
+    AllowedFragment {
+        file: CI,
+        fragment: "save-if: false",
+        reason: "a restore-only Rust cache",
+    },
+    // A schedule reads once whether CI passed on HEAD, to choose between releasing HEAD and a base
+    // rebuild; any failure there means "not green". The ci-green job is the gate.
+    AllowedFragment {
+        file: RELEASE,
+        fragment: "continue-on-error: true # a schedule only asks whether HEAD is green yet; ci-green is the gate",
+        reason: "the schedule's read of CI on HEAD, not a gate",
+    },
+    // A recovery that reuses a published image scans it again, but cannot change it: its findings
+    // are reported as a warning by the step after, not a failure of the publish.
+    AllowedFragment {
+        file: RELEASE,
+        fragment: "continue-on-error: true # findings in an image already published are warnings",
+        reason: "the scan of a reused, already published image",
+    },
+];
 
 /// Go: `TestNoVacuousFlags`. Scans the files that define gates: the Makefile and every make
 /// fragment, the pre-commit configuration and every YAML file under .github, the workflows

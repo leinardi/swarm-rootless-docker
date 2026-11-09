@@ -105,11 +105,15 @@ The security boundary of the whole project. Any widening is **critical**.
 
 ### Images and releases
 
-- The base is the floating `docker:<major>-dind-rootless` from the Dockerfile of the commit
-  being built, pinned per build to the digest the release resolved, and recorded in the image.
-  A release that builds HEAD needs a green `ci-result` on that exact SHA; a base-only rebuild
-  builds the last release's SHA with that SHA's own base, context key and floating tag, never
-  HEAD's.
+- The base is the floating `docker.io/library/docker:<major>-dind-rootless` (v0.3.0 and earlier
+  write `docker:<major>-dind-rootless`; both must still be read) from the Dockerfile of the commit
+  being built, pinned per build to the digest the release resolved, and recorded in the image. Every
+  release needs a green `ci-result` on the exact SHA it builds (`require-ci-green` in the ci-green
+  job, never a check name); a base-only rebuild builds the last release's SHA with that SHA's own
+  base, context key and floating tag, never HEAD's, and runs the whole image suite and the base-diff
+  scan itself. A recovery restores the base digest and the scan policy its tag's annotation records
+  (`Base:`, `Scan baseline:`); a tag without them means no baseline. The image's launcher is the
+  binary `make image-binary` built, byte for byte, in CI and in the release.
 - Tags are immutable; a floating `<major>-uid<UID>` tag only moves to the highest release of
   that Docker major. Nothing is tagged before the image is tested and scanned.
 

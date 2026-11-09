@@ -26,26 +26,39 @@
 # clone with the full history and every tag, on the commit the workflow runs from (main).
 #
 #   release-plan.sh plan
-#       Appends mode, sha, version, previous, major, base_ref and base_digest to $GITHUB_OUTPUT.
-#       The modes:
+#       Appends mode, sha, version, previous, major, base_ref (canonical:
+#       docker.io/library/docker:<major>-dind-rootless), base_from and base_repo (the runtime FROM
+#       and its repository as the commit's Dockerfile writes them, which the build context must
+#       name), base_digest, full_suite and scan_baseline to $GITHUB_OUTPUT. The modes:
 #         head     a new version from HEAD: releasable commits since the last tag (or an explicit
-#                  version), and ci-result green on HEAD. A dispatch waits for a ci-result that is
-#                  still missing or running (a dispatch right after a merge); a schedule does not.
+#                  version). A schedule takes it only when HEAD_CI is green; a dispatch takes it
+#                  whatever CI says so far, and release.yaml's ci-green job then waits for and
+#                  requires ci-result green on that exact commit.
 #         base     the latest release's own commit again, as the next patch version, because the
 #                  upstream base it was built on has a new digest (schedule only).
 #         recover  a version whose tag exists, again from its own commit and on the base its
 #                  published images record: a publish that failed part-way is finished, and
 #                  nothing already published is replaced.
 #         none     nothing to do (schedule only).
+#       Whatever the mode, the commit's own CI is required green by release.yaml's ci-green job
+#       (gh-composite-actions' require-ci-green), not here. full_suite is true when the release
+#       must run the whole image suite itself rather than a smoke test: always in base mode, and in
+#       the other modes when the pinned base digest is not the one the previous release records,
+#       so a base digest no release has been tested on never ships on a smoke test alone.
+#       scan_baseline is the image the Trivy gate compares with (the base, by digest) in base mode
+#       and in the recovery of a release whose tag records one; empty everywhere else.
+#   release-plan.sh record BASE_REF BASE_DIGEST SCAN_BASELINE
+#       Prints the lines release.yaml adds to a new tag's annotation (Base: and Scan baseline:),
+#       which a recovery of that tag reads back.
 #   release-plan.sh floating VERSION
 #       Prints true when VERSION is the highest release of the Docker major its own Dockerfile
 #       names, so the floating <major>-uid<UID> tags may point at it, and false otherwise.
 #
 # Environment: EVENT (schedule or workflow_dispatch), VERSION_INPUT (the dispatch's version, may be
-# empty), REPOSITORY (owner/name), IMAGE_REPO, IMAGE_VARIANTS (UID:GID pairs, space-separated),
-# RELEASE_TAG_REGEX, GITHUB_OUTPUT, and optionally GITHUB_STEP_SUMMARY, SVU (the svu command),
-# CI_WAIT_SECONDS (how long a dispatch waits for CI, default 1800) and CI_POLL_SECONDS (how often
-# it looks, default 30).
+# empty), HEAD_CI (schedule only: green when require-ci-green passed on HEAD, checked once, and
+# not-green otherwise), REPOSITORY (owner/name), IMAGE_REPO, IMAGE_VARIANTS (UID:GID pairs,
+# space-separated), RELEASE_TAG_REGEX, GITHUB_OUTPUT, and optionally GITHUB_STEP_SUMMARY and SVU
+# (the svu command).
 #
 # Every lookup fails closed: only a definite "not found" counts as absent, and any other error
 # stops the run, so an outage never reads as "nothing to release" or as "not released yet".
@@ -57,8 +70,6 @@ shopt -s inherit_errexit
 
 DOCKERFILE=deployments/docker/Dockerfile
 SVU="${SVU:-svu}"
-CI_WAIT_SECONDS="${CI_WAIT_SECONDS:-1800}"
-CI_POLL_SECONDS="${CI_POLL_SECONDS:-30}"
 
 die() {
 	echo "release-plan: $*" >&2
@@ -112,9 +123,11 @@ next_patch() {
 	echo "v${major}.${minor}.$((patch + 1))"
 }
 
-# The Docker major of the runtime stage's FROM in commit $1's Dockerfile: exactly one stage named
-# runtime, FROM docker:<major>-dind-rootless with no digest and no flags.
-docker_major() {
+# The image of the runtime stage's FROM in commit $1's Dockerfile, as written: exactly one stage
+# named runtime, FROM docker.io/library/docker:<major>-dind-rootless with no digest and no flags.
+# Commits from before the canonical spelling (v0.3.0 and earlier) write docker:<major>-dind-rootless,
+# the same image, and are still read: a base rebuild or a recovery builds them as they are.
+runtime_from() {
 	local content lines image
 	local -a fields
 	content="$(git show "$1:${DOCKERFILE}")" || die "commit $1 has no ${DOCKERFILE}"
@@ -124,9 +137,51 @@ docker_major() {
 	read -r -a fields <<<"${lines}"
 	[[ "${#fields[@]}" -eq 4 ]] || die "commit $1's runtime stage is '${lines}', want FROM <image> AS runtime"
 	image="${fields[1]}"
-	[[ "${image}" =~ ^docker:([1-9][0-9]*)-dind-rootless$ ]] ||
-		die "commit $1's runtime stage is FROM ${image}, want docker:<major>-dind-rootless"
-	echo "${BASH_REMATCH[1]}"
+	[[ "${image}" =~ ^(docker\.io/library/)?docker:[1-9][0-9]*-dind-rootless$ ]] ||
+		die "commit $1's runtime stage is FROM ${image}, want docker.io/library/docker:<major>-dind-rootless"
+	echo "${image}"
+}
+
+# The Docker major of commit $1's runtime stage.
+docker_major() {
+	local image
+	image="$(runtime_from "$1")"
+	image="${image##*:}"
+	echo "${image%-dind-rootless}"
+}
+
+# The canonical reference of Docker major $1's base, whatever spelling a Dockerfile uses for it.
+base_reference() {
+	echo "docker.io/library/docker:$1-dind-rootless"
+}
+
+# The repository of the base reference $1 (a digest-free, tagged reference).
+repository_of() {
+	echo "${1%:*}"
+}
+
+# A tag's annotation line "<label>: <value>": the value, nothing when the annotation has no such
+# line, and a stop when it has more than one.
+annotation_value() {
+	local lines
+	lines="$(git for-each-ref --format='%(contents)' "refs/tags/$1" | { grep -E "^$2: " || true; })"
+	[[ "$(grep -c . <<<"${lines}")" -le 1 ]] || die "the tag $1 has more than one '$2:' line in its annotation"
+	echo "${lines#"$2: "}"
+}
+
+# The lines release.yaml adds to a new tag's annotation, beside the toolchain: the base the
+# release is built on, and the scan policy it passed (the base digest it was compared with, or
+# none), so a recovery of it builds on the same digest and scans the same way. A tag without
+# them (v0.3.0 and earlier) is a release on an unrecorded base, scanned with no baseline.
+record() {
+	local base_ref="$1" base_digest="$2" baseline="$3"
+	[[ "${base_ref}" =~ ^docker\.io/library/docker:[1-9][0-9]*-dind-rootless$ ]] ||
+		die "record: '${base_ref}' is not docker.io/library/docker:<major>-dind-rootless"
+	[[ "${base_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "record: '${base_digest}' is not a digest"
+	[[ -z "${baseline}" || "${baseline}" == "$(repository_of "${base_ref}")@${base_digest}" ]] ||
+		die "record: the scan baseline '${baseline}' is not the base ${base_ref}@${base_digest}"
+	echo "Base: ${base_ref}@${base_digest}"
+	echo "Scan baseline: ${baseline:-none}"
 }
 
 # The UIDs of IMAGE_VARIANTS, one per line, after checking every pair. The UID names the tag
@@ -145,70 +200,6 @@ variant_uids() {
 	[[ "${seen}" != " " ]] || die "IMAGE_VARIANTS is empty"
 }
 
-# ci-result for commit $1: green, red, pending or missing. Only check runs of GitHub Actions count,
-# so no other app can pass the check by naming a run ci-result, and every latest run of it (a push
-# and a dispatch run each leave one) must have succeeded.
-ci_state() {
-	local response
-	response="$(gh api "repos/${REPOSITORY}/commits/$1/check-runs?check_name=ci-result&filter=latest&per_page=100")" ||
-		die "could not read ci-result for $1"
-	jq -r '
-		[.check_runs[] | select(.app.slug == "github-actions")] as $runs
-		| if ($runs | length) == 0 then "missing"
-		  elif any($runs[]; .status != "completed") then "pending"
-		  elif all($runs[]; .conclusion == "success") then "green"
-		  else "red" end
-	' <<<"${response}" || die "could not parse ci-result for $1"
-}
-
-# What a ci-result state means for a release that waits on it.
-state_note() {
-	case "$1" in
-	missing) echo "; no ci-result run exists for it yet, so CI may still be running on it" ;;
-	pending) echo "; CI is still running on it" ;;
-	*) ;;
-	esac
-}
-
-# ci-result for commit $1 once CI has finished with it. A dispatch waits while it is missing or
-# pending, up to CI_WAIT_SECONDS: one dispatched right after a merge finds CI still running on the
-# merge commit. A schedule reads it once and tries again the next day. Only green or red ends the
-# wait early; when it runs out, the last state is the answer.
-settled_ci_state() {
-	local state deadline=$((SECONDS + CI_WAIT_SECONDS))
-	while :; do
-		state="$(ci_state "$1")" || exit 1
-		case "${state}" in
-		missing | pending) ;;
-		*)
-			echo "${state}"
-			return
-			;;
-		esac
-		if [[ "${EVENT}" != workflow_dispatch ]] || ((SECONDS >= deadline)); then
-			echo "${state}"
-			return
-		fi
-		note "ci-result is ${state} on $1: waiting for CI to finish"
-		sleep "${CI_POLL_SECONDS}"
-	done
-}
-
-# Why a state that is not green stops a dispatch.
-refusal() {
-	local waited=""
-	if [[ "${EVENT}" == workflow_dispatch && "$2" != red ]]; then
-		waited=" after waiting ${CI_WAIT_SECONDS} s"
-	fi
-	echo "ci-result is $2 on $1$(state_note "$2")${waited}; a release needs it green on that exact commit"
-}
-
-require_green() {
-	local state
-	state="$(settled_ci_state "$1")"
-	[[ "${state}" == green ]] || die "$(refusal "$1 ($2)" "${state}")"
-}
-
 # imagetools inspect of $1 with the format $2. Prints the JSON; returns 1 for a reference that
 # does not exist, and stops the run on any other error.
 inspect() {
@@ -223,10 +214,10 @@ inspect() {
 	die "could not inspect $1: ${out}"
 }
 
-# The index digest upstream serves for docker:<major>-dind-rootless now.
+# The index digest upstream serves for the base reference $1 (canonical) now.
 upstream_digest() {
 	local json digest
-	json="$(inspect "docker.io/library/$1" '{{json .Manifest}}')" || die "upstream has no $1"
+	json="$(inspect "$1" '{{json .Manifest}}')" || die "upstream has no $1"
 	digest="$(jq -r '.digest' <<<"${json}")"
 	[[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "upstream $1 has no index digest (got '${digest}')"
 	echo "${digest}"
@@ -266,14 +257,31 @@ unfinished() {
 
 emit() {
 	local mode="$1" sha="${2:-}" version="${3:-}" previous="${4:-}" major="" base_ref="" base_digest=""
+	local full_suite="" tested="" base_from="" base_repo="" scan_baseline="${6:-}"
 	if [[ "${mode}" != none ]]; then
+		base_from="$(runtime_from "${sha}")"
+		base_repo="$(repository_of "${base_from}")"
 		major="$(docker_major "${sha}")"
-		base_ref="docker:${major}-dind-rootless"
+		base_ref="$(base_reference "${major}")"
 		base_digest="${5:-}"
 		if [[ -z "${base_digest}" ]]; then
 			base_digest="$(upstream_digest "${base_ref}")"
 		fi
-		note "${mode}: ${version} from ${sha} on ${base_ref}@${base_digest} (previous: ${previous:-none})"
+		# The base a release ships was tested with the whole suite by the release that first
+		# shipped it; CI's run on the commit may have used an older rebuild of the same tag.
+		full_suite=true
+		if [[ "${mode}" != base && -n "${previous}" ]]; then
+			tested="$(recorded_base "${previous}")"
+			if [[ "${tested}" == "${base_digest}" ]]; then
+				full_suite=false
+			fi
+		fi
+		# The base diff is a base rebuild's alone, and its recovery's, which restores it from the
+		# tag (recover).
+		if [[ "${mode}" == base ]]; then
+			scan_baseline="$(repository_of "${base_ref}")@${base_digest}"
+		fi
+		note "${mode}: ${version} from ${sha} on ${base_ref}@${base_digest} (previous: ${previous:-none}, built on ${tested:-another base}; full suite: ${full_suite}; scan baseline: ${scan_baseline:-none})"
 	fi
 	{
 		echo "mode=${mode}"
@@ -282,7 +290,11 @@ emit() {
 		echo "previous=${previous}"
 		echo "major=${major}"
 		echo "base_ref=${base_ref}"
+		echo "base_from=${base_from}"
+		echo "base_repo=${base_repo}"
 		echo "base_digest=${base_digest}"
+		echo "full_suite=${full_suite}"
+		echo "scan_baseline=${scan_baseline}"
 	} >>"${GITHUB_OUTPUT}"
 	exit 0
 }
@@ -318,27 +330,52 @@ recorded_base() {
 }
 
 # A version whose tag already exists, from the tag's own commit, on the base its published images
-# record: the variants still to build match them, and the release names the base they are on.
+# record, or else the one its tag records: the variants still to build match them, and the
+# release names the base they are on. The scan policy is the tag's too: a base rebuild that failed
+# after its tag push is finished with the same base diff it passed, never a stricter gate that
+# would hold it, and every later release, back for good. A tag that records neither (v0.3.0 and
+# earlier) takes upstream's current digest and no baseline, as before.
 recover() {
-	local sha previous base
+	local sha previous base recorded baseline base_ref
 	sha="$(commit_of "$1")"
-	require_green "${sha}" "the commit $1 is tagged on"
 	previous="$(below "$1")"
 	base="$(recorded_base "$1")"
-	emit recover "${sha}" "$1" "${previous}" "${base}"
+	base_ref="$(base_reference "$(docker_major "${sha}")")"
+	recorded="$(annotation_value "$1" Base)"
+	baseline="$(annotation_value "$1" "Scan baseline")"
+	if [[ -n "${recorded}" ]]; then
+		[[ "${recorded}" =~ ^(.+)@(sha256:[0-9a-f]{64})$ && "${BASH_REMATCH[1]}" == "${base_ref}" ]] ||
+			die "the tag $1 records the base '${recorded}', not ${base_ref}@<digest>"
+		recorded="${BASH_REMATCH[2]}"
+		[[ -z "${base}" || "${base}" == "${recorded}" ]] ||
+			die "the published images of $1 are built on ${base}, but its tag records ${recorded}"
+		base="${recorded}"
+	fi
+	case "${baseline}" in
+	"" | none) baseline="" ;;
+	*)
+		[[ -n "${recorded}" && "${baseline}" == "$(repository_of "${base_ref}")@${base}" ]] ||
+			die "the tag $1 records the scan baseline '${baseline}', not its base $(repository_of "${base_ref}")@${base:-<unrecorded>}"
+		;;
+	esac
+	emit recover "${sha}" "$1" "${previous}" "${base}" "${baseline}"
 }
 
 plan() {
 	require_env EVENT REPOSITORY IMAGE_REPO IMAGE_VARIANTS RELEASE_TAG_REGEX GITHUB_OUTPUT
 	variant_uids >/dev/null
-	[[ "${CI_WAIT_SECONDS}" =~ ^[0-9]+$ && "${CI_POLL_SECONDS}" =~ ^[0-9]+(\.[0-9]+)?$ ]] ||
-		die "CI_WAIT_SECONDS must be whole seconds and CI_POLL_SECONDS seconds"
 	case "${EVENT}" in
-	schedule | workflow_dispatch) ;;
+	schedule)
+		case "${HEAD_CI:-}" in
+		green | not-green) ;;
+		*) die "HEAD_CI must be green or not-green on a schedule, got '${HEAD_CI:-}'" ;;
+		esac
+		;;
+	workflow_dispatch) ;;
 	*) die "EVENT must be schedule or workflow_dispatch, got '${EVENT}'" ;;
 	esac
 
-	local head latest current next version reason state
+	local head latest current next version reason
 	head="$(git rev-parse HEAD)"
 	latest="$(git tag --list | release_only | highest)"
 
@@ -352,7 +389,6 @@ plan() {
 		fi
 		higher "${version}" "${latest}" ||
 			die "${version} is not higher than the latest release ${latest}; tags are immutable, so only a higher version may be published"
-		require_green "${head}" HEAD
 		emit head "${head}" "${version}" "${latest}"
 	fi
 
@@ -381,12 +417,10 @@ plan() {
 	[[ "${next}" =~ ${RELEASE_TAG_REGEX} ]] || die "svu derived '${next}' from ${current}, which is not a vX.Y.Z tag"
 	if [[ "${next}" != "${current}" ]]; then
 		higher "${next}" "${current}" || die "svu derived ${next}, which is not higher than ${current}"
-		state="$(settled_ci_state "${head}")"
-		if [[ "${state}" == green ]]; then
+		if [[ "${EVENT}" == workflow_dispatch || "${HEAD_CI}" == green ]]; then
 			emit head "${head}" "${next}" "${current}"
 		fi
-		[[ "${EVENT}" == schedule ]] || die "$(refusal "HEAD (${head})" "${state}")"
-		warn "Commits since ${current} would release ${next}, but ci-result is ${state} on HEAD (${head}). They wait for a green run; only a base rebuild of ${current} was considered."
+		warn "Commits since ${current} would release ${next}, but ci-result is not green on HEAD (${head}) yet. They wait for a green run; only a base rebuild of ${current} was considered."
 	elif [[ "${EVENT}" == workflow_dispatch ]]; then
 		die "no feat/fix or breaking-change commit since ${current}, so there is nothing to bump; dispatch an explicit version to force one"
 	fi
@@ -396,13 +430,12 @@ plan() {
 	local sha major base_ref upstream uid built
 	sha="$(commit_of "${latest}")"
 	major="$(docker_major "${sha}")"
-	base_ref="docker:${major}-dind-rootless"
+	base_ref="$(base_reference "${major}")"
 	upstream="$(upstream_digest "${base_ref}")"
 	for uid in $(variant_uids); do
 		built="$(published_base "${IMAGE_REPO}:${latest}-uid${uid}")"
 		if [[ "${built}" != "${upstream}" ]]; then
 			note "${IMAGE_REPO}:${latest}-uid${uid} is built on ${built:-an unrecorded base}; upstream ${base_ref} is ${upstream}"
-			require_green "${sha}" "the commit ${latest} is tagged on"
 			emit base "${sha}" "$(next_patch "${latest}")" "${latest}" "${upstream}"
 		fi
 	done
@@ -440,7 +473,11 @@ floating)
 	[[ $# -eq 2 ]] || die "usage: $0 floating VERSION"
 	floating "$2"
 	;;
+record)
+	[[ $# -eq 4 ]] || die "usage: $0 record BASE_REF BASE_DIGEST SCAN_BASELINE"
+	record "$2" "$3" "$4"
+	;;
 *)
-	die "usage: $0 plan | floating VERSION"
+	die "usage: $0 plan | floating VERSION | record BASE_REF BASE_DIGEST SCAN_BASELINE"
 	;;
 esac
