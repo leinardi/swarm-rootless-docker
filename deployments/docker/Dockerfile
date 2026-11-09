@@ -32,6 +32,18 @@
 # runtime base is pinned by its floating major tag only: the release resolves the tag's digest
 # once, builds from exactly that digest (a buildx build context overrides this FROM) and records
 # it in the org.opencontainers.image.base.digest label. A local build uses the tag as is.
+#
+# CI and the release check the pins with gh-composite-actions' check-pinned-bases: the two bases
+# are deliberately pinned by tag only (docker:<major>-dind-rootless as above; dhi.io rebuilds its
+# tags too often to follow by digest), the frontend by digest, and every download by its sha256.
+# The runtime base is written with its canonical repository, docker.io/library/docker, so that
+# check exempts exactly upstream's docker image from the digest rule and nothing else on Docker
+# Hub (it matches the repository as written, with no docker.io normalisation).
+#
+# The build stage is the default for local development (make image-build). CI and the release
+# replace it with a binary built on the runner (make image-binary), through a buildx named context
+# called build, so the shipped image's binary is that file byte for byte and dhi.io is never
+# contacted (make image-build-prebuilt).
 
 ########################
 # build: cross-compile a static musl binary for the target platform on the build platform, with
@@ -121,7 +133,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry,sharing=lo
 # spec covers both with mounts, and every container the launcher makes is removed with its
 # anonymous volumes.
 ########################
-FROM docker:29-dind-rootless AS runtime
+FROM docker.io/library/docker:29-dind-rootless AS runtime
 ARG VERSION="dev"
 ARG COMMIT="none"
 ARG DATE="unknown"
