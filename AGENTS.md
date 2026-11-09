@@ -54,6 +54,7 @@ make image-build            # the 568 variant (ROOTLESS_UID/ROOTLESS_GID); needs
 make image-binary           # the static launcher the release ships, into target/image-context/out
 make image-build-prebuilt   # the image from that binary: the release's packaging path, no dhi.io
 make image-test             # the built image without a daemon (IMAGE_TEST_BINARY: compare its binary)
+make image-build-test       # image-build, then image-test (ordered, safe under make -j)
 make integration-test       # tests/integration.rs on this Docker; needs the AppArmor sysctl at 0
 ```
 
@@ -186,7 +187,7 @@ Run before considering an edit done. `make check` applies to every row.
 | `scripts/check-license-headers.sh` | `scripts/check-license-headers.sh` |
 | `scripts/hooks/rustfmt-on-edit.sh` | shellcheck (in `make check`); run it once by editing a `.rs` file in Claude Code |
 | `droast.toml`, `.dclintrc` | `make check` (droast and dclint) |
-| `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build image-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
+| `deployments/docker/Dockerfile`, `scripts/image-test.sh` | `make image-build-test`, `cargo test --locked -p meta --test dockerfiles --test release`; a new Docker major also updates the README and the Compose example (the release meta test names them) |
 | `tests/integration/**`, the launcher's behaviour | `make integration-test` (the AppArmor sysctl at 0 for the run, then back to 1; `docs/testing.md`) |
 | `deployments/docker/docker-compose.yaml` | `make check` (dclint); `docker stack config -c deployments/docker/docker-compose.yaml` with `DOCKER_GID` set; keep the README's deployment section in step |
 | `.github/workflows/**`, `.github/actions/**`, `.github/dependabot.yml` | `pre-commit run actionlint --all-files`, `cargo test --locked -p meta --test toolchain --test release`; reason through each trigger the workflow has (pull request, push, dispatch, schedule) and keep `ci-result`'s `needs` complete; for `release.yaml`, dispatch a dry run |

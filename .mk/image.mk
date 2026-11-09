@@ -81,6 +81,15 @@ IMAGE_TEST_BINARY ?=
 image-test: ## Check the built image (user, files, labels, entrypoint, healthcheck; IMAGE_TEST_BINARY)
 	scripts/image-test.sh "$(IMAGE)" "$(ROOTLESS_UID)" "$(ROOTLESS_GID)" $(if $(IMAGE_TEST_BINARY),"$(IMAGE_TEST_BINARY)")
 
+# image-build and image-test in order. Goals on one command line are not ordered under make -j, so
+# `make image-build image-test` could check a missing or previous image before the build has loaded
+# the new one; each step here is its own make run, the second started only after the first
+# succeeded. Both stay on their own: image-test also checks the prebuilt image, as CI does.
+.PHONY: image-build-test
+image-build-test: ## Build the image (image-build), then check it (image-test; ordered, safe under make -j)
+	$(MAKE) --no-print-directory image-build
+	$(MAKE) --no-print-directory image-test
+
 # One test at a time: they share the node, its lock and its volume list. On hosts that restrict
 # unprivileged user namespaces through AppArmor (Ubuntu 23.10 and later), rootlesskit needs
 # kernel.apparmor_restrict_unprivileged_userns=0 for the run; set it back afterwards.
