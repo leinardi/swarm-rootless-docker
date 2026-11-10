@@ -103,8 +103,10 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   and the exact Rust release, ShellCheck one value, Trivy never pinned, no vacuous flags),
   `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
   Dockerfile, the image workflows agree on the variants, every variant scanned), and
-  `workspace_lints.rs` (every member opts into the workspace lints). Most run rust-common's
-  `repo-meta` checks with this repository's parameters, beside the rules that are its own.
+  `workspace_lints.rs` (every member opts into the workspace lints) and `rust_common_pins.rs` (the
+  rust-common pins are `vX.Y.Z` tags with the matching `version`, one tag throughout). Most run
+  rust-common's `repo-meta` checks with this repository's parameters, beside the rules that are
+  its own.
   `meta/src/lib.rs` holds what they share: `repo()`, the repository under test.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
@@ -136,17 +138,18 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v1.0.0"`, with `version = "1.0"`) in the root `Cargo.toml`'s
+release tag (`tag = "v1.1.0"`, with `version = "1.1"`) in the root `Cargo.toml`'s
 `[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
   by moving the `tag`.
-- **Moving the `tag`** needs the network: change it on every rust-common line (nothing checks that
-  they agree), and `version` with it when the crates' `<major>.<minor>` moves (a `v1.0.0` checkout
-  does not resolve against `version = "0.3"`), then run `cargo fetch` before
-  the `--locked` make targets, which otherwise refuse the stale lock. The manifest change is what
+- **Moving the `tag`** needs the network: change it on every rust-common line (the
+  `rust_common_pins` meta-test refuses lines that disagree), and `version` with it when the crates'
+  `<major>.<minor>` moves (a `v1.1.0` checkout does not resolve against `version = "0.3"`), then
+  run `cargo fetch` before the `--locked` make targets, which otherwise refuse the stale lock. The
+  manifest change is what
   makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
   `cargo update -p <crate>` can also move unrelated edges.
   `git diff Cargo.lock` must touch only rust-common lines. Commit the `Cargo.toml` and
