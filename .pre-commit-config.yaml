@@ -117,7 +117,7 @@ repos:
       # the rust CI job and the scheduled scan run the same check on every pull request and weekly.
       - id: cargo-deny
         name: cargo deny
-        entry: cargo deny check
+        entry: cargo deny --workspace check
         language: system
         pass_filenames: false
         require_serial: true

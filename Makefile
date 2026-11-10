@@ -55,10 +55,9 @@ ARGS ?= --version
 
 # rust.mk: src/version.rs reads SWARM_ROOTLESS_DOCKER_VERSION/_COMMIT/_DATE at compile time. The
 # packages define no [features], so the default RUST_FEATURES (--all-features) builds what the
-# default features build. cargo-deny keeps its old scope, the root package's graph: --workspace
-# would add the meta crate's.
+# default features build. cargo-deny keeps rust.mk's default scope, --workspace: every member's
+# graph, the meta crate's included.
 RUST_STAMP_PREFIX := SWARM_ROOTLESS_DOCKER
-RUST_DENY_ARGS    :=
 
 # The date stamp is HEAD's commit date in UTC (rust.mk's GIT_COMMIT_DATE, the clock's only
 # outside git), the date release.yaml stamps. A stamp that moves only with a commit keeps a

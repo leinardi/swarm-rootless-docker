@@ -312,7 +312,7 @@ jobs:
       - name: Set up cargo-deny
         uses: leinardi/gh-composite-actions/setup-cargo-deny@addc113a34e0a96ca2e08218380fdecad2fdd230 # v1.4.2
 
-      # The root package's graph (RUST_DENY_ARGS in the Makefile), as before.
+      # Every workspace member's graph (rust.mk's --workspace), the meta crate's included.
       - name: Check dependencies with cargo-deny
         run: make rust-deny
 
