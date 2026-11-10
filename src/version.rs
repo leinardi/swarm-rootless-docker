@@ -29,17 +29,17 @@
 
 use service_kit::{BuildInfo, Defaults, EmptyStamp, buildinfo};
 
-/// The version (`dev` for a local build), the commit (`none` when unknown) and the build date
-/// (`unknown` when unknown). A variable set to the empty string stamps the empty string.
-pub const BUILD: BuildInfo = buildinfo!(
-    "SWARM_ROOTLESS_DOCKER",
-    Defaults {
-        version: "dev",
-        commit: "none",
-        date: "unknown",
-        empty: EmptyStamp::Kept,
-    },
-);
+/// What an unstamped build reports: the version `dev`, the commit `none` and the build date
+/// `unknown`, and a variable set to the empty string stamps the empty string.
+const DEFAULTS: Defaults = Defaults {
+    version: "dev",
+    commit: "none",
+    date: "unknown",
+    empty: EmptyStamp::Kept,
+};
+
+/// The build's version, commit and date, stamped or defaulted.
+pub const BUILD: BuildInfo = buildinfo!("SWARM_ROOTLESS_DOCKER", DEFAULTS);
 
 /// The version line, without the program name: `VERSION (COMMIT, DATE)`. `--version` prints it
 /// after the name.
@@ -51,4 +51,46 @@ pub fn long() -> String {
         date,
     } = BUILD;
     format!("{version} ({commit}, {date})")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The defaults of an unstamped build are pinned as literals, whatever the test build was
+    /// stamped with: `cli`'s `--version` test reads `BUILD`, so it cannot catch a wrong default.
+    #[test]
+    fn defaults_are_dev_none_unknown() {
+        assert_eq!(
+            DEFAULTS,
+            Defaults {
+                version: "dev",
+                commit: "none",
+                date: "unknown",
+                empty: EmptyStamp::Kept,
+            }
+        );
+        assert_eq!(
+            BuildInfo::resolve(None, None, None, DEFAULTS),
+            BuildInfo {
+                version: "dev",
+                commit: "none",
+                date: "unknown",
+            }
+        );
+    }
+
+    /// An empty stamp is kept as the empty string, not replaced by the default.
+    #[test]
+    fn empty_stamp_is_kept() {
+        assert_eq!(DEFAULTS.empty, EmptyStamp::Kept);
+        assert_eq!(
+            BuildInfo::resolve(Some(""), Some(""), Some(""), DEFAULTS),
+            BuildInfo {
+                version: "",
+                commit: "",
+                date: "",
+            }
+        );
+    }
 }
