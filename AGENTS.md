@@ -25,7 +25,7 @@ make rust-clippy   # cargo clippy --workspace --all-targets --all-features --loc
 make verify        # verify-rust: rust-build, rust-fmt-check, rust-clippy, rust-test and rust-doc
 make rust-doc      # cargo doc --workspace --all-features --no-deps --locked, warnings as errors
 make rust-run ARGS="--version"   # run with SWARM_ROOTLESS_DOCKER_VERSION/_COMMIT/_DATE set from git
-make rust-deny     # cargo deny check (root package): advisories, licences, bans, sources (network)
+make rust-deny     # cargo deny --workspace check: advisories, licences, bans, sources (network)
 make audit-deps    # cargo deny check advisories (network required)
 make check         # pre-commit on all files: rustfmt, clippy, tests, droast, dclint, linters
 make check-stage   # pre-commit on the staging area only
@@ -43,7 +43,7 @@ cargo test --locked -p meta --test toolchain
 
 The Makefile pulls shared snippets from `leinardi/make-common@v1` into `.mk/` on first run. To
 refresh: `make mk-common-update`. The Rust targets are make-common's `rust.mk`, set up in the
-Makefile's project config (`RUST_STAMP_PREFIX`, `RUST_DENY_ARGS`). Project targets live in the
+Makefile's project config (`RUST_STAMP_PREFIX`). Project targets live in the
 local `.mk/*.mk` files listed in `MK_LOCAL_FILES` (`verify.mk`, `audit-deps.mk`, `image.mk`),
 never as recipes in the Makefile.
 
@@ -152,8 +152,8 @@ Each member opts in with `<name>.workspace = true`.
   `git diff Cargo.lock` must touch only rust-common lines. Commit the `Cargo.toml` and
   `Cargo.lock` changes together.
   `deny.toml` allow-lists the source (`allow-git`); it changes with the URL. `make rust-deny`
-  checks the root package's graph only, so the meta crate's rust-common crates are not gated by
-  cargo-deny.
+  checks every workspace member's graph (`--workspace`), the meta crate's rust-common crates
+  included.
 - **Local work on a shared crate** uses an uncommitted
   `[patch."https://github.com/leinardi/rust-common"]` table in the root `Cargo.toml`, one
   `<name> = { path = "../rust-common/crates/<name>" }` line per crate the workspace names (a
