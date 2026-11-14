@@ -283,7 +283,7 @@ jobs:
     # daily schedule releases with no human in the loop. The later jobs only run after this one.
     environment: release
     permissions:
-      contents: write # push the tag
+      contents: read # the tag push uses the release App's token, not this one
       packages: write # copy the images to GHCR
       attestations: read # verify a published image before reusing it
       actions: read # require-job-success reads the audit job of this run
@@ -308,7 +308,7 @@ jobs:
 
     steps:
       # No persisted credentials: the one step that writes to the repository, the tag push, passes
-      # the token to that one git command.
+      # the release App's token to that one git command.
       - name: Checkout the commit to release
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -316,6 +316,20 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
+
+      # The tag push needs the release App (below), so every run but a dry run fails here, before
+      # the build, when the App is not configured, instead of after an hour of building.
+      - name: Check the tag-push credentials
+        if: env.DRY_RUN != 'true'
+        env:
+          APP_CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APP_CLIENT_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "The release environment needs the RELEASE_APP_CLIENT_ID variable and the RELEASE_APP_PRIVATE_KEY secret (docs/release.md, \"The tag push\")." >&2
+            exit 1
+          fi
 
       # Everything stamped into the images comes from the commit, never from the clock or the
       # clone. The release's own script comes from the workflow's commit, not from the one built,
@@ -924,13 +938,31 @@ jobs:
             echo "The base each platform was built on (provenance): $BASE_LINE"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # GITHUB_TOKEN cannot push this tag whenever the commit's .github/workflows differs from the
+      # default branch's: GitHub refuses a ref that "creates or updates" a workflow without the
+      # workflows permission, which GITHUB_TOKEN can never hold, and the REST refs API refuses it
+      # the same way. A base rebuild always tags an older commit, so it needs a token that holds
+      # it: the release App's, minted here, scoped to this repository and to these two
+      # permissions, and revoked at the end of the job. Minted just before the push, since it
+      # lives one hour and the build before it can take longer.
+      - name: Mint the tag-push token
+        id: app-token
+        if: env.DRY_RUN != 'true' && steps.tag.outputs.exists != 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: swarm-rootless-docker
+          permission-contents: write
+          permission-workflows: write
+
       # The point of no return. Everything after it reuses a published artifact only once it is
       # proven to be this workflow's and never replaces one, so the next run finishes a failed
       # publish. The token reaches this one git command as a header, never the clone's config.
       - name: Push the tag
         if: env.DRY_RUN != 'true' && steps.tag.outputs.exists != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
