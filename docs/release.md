@@ -77,8 +77,8 @@ does before the tag exists:
    warnings (see below).
 7. Wait for the `audit` job (cargo-deny over the commit's dependencies, run alongside the build)
    to have passed in this run attempt.
-8. Push the tag (immutable), copy the tested index to GHCR by digest, untagged, and check that GHCR
-   serves that digest.
+8. Push the tag (immutable) with the release App's token ([The tag push](#the-tag-push)), copy
+   the tested index to GHCR by digest, untagged, and check that GHCR serves that digest.
 9. Attest its provenance, sign it with cosign (keyless, the workflow's identity on `main`), and
    only then add `vX.Y.Z-uid<UID>`.
 10. Draft the GitHub release, move `<major>-uid<UID>` when this version is the highest release of
@@ -86,6 +86,23 @@ does before the tag exists:
 
 Every job that holds a write permission or an OIDC identity (`release`, `publish`, `finalize`)
 runs in the `release` environment.
+
+### The tag push
+
+`GITHUB_TOKEN` cannot push the tag whenever the tagged commit's `.github/workflows/` differs from
+the default branch's: GitHub refuses the ref ("refusing to allow a GitHub App to create or update
+workflow ... without `workflows` permission"), `GITHUB_TOKEN` can never hold that permission, and
+the REST refs API refuses it the same way. A base rebuild always tags an older commit, so after
+any workflow change on `main` it would never release. The `release` job therefore mints a token
+from a GitHub App (`actions/create-github-app-token`) just before the push, scoped to this
+repository and to Contents and Workflows write, and uses it for that one `git push`; its own
+`GITHUB_TOKEN` stays `contents: read`.
+
+The App is installed on this repository only, with the repository permissions Contents
+(read and write) and Workflows (read and write), and nothing else. The `release` environment holds
+its client ID as the variable `RELEASE_APP_CLIENT_ID` and a private key as the secret
+`RELEASE_APP_PRIVATE_KEY`. Every run but a dry run checks both before it builds anything, and
+stops if either is missing, a recovery whose tag already exists included; a dry run needs neither.
 
 ## What CI proves
 
