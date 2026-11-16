@@ -141,19 +141,20 @@ anywhere before a colon (`prefix:` counts as `fix:`). See `AGENTS.md`.
 
 ## Gates
 
-Do not re-run the repository's gates (`make check`, `make verify`, `make rust-deny`,
-`cargo test -p meta`, the integration tests). The implementer is expected to run them and CI runs
-them again, but do not assume either happened: report the verification evidence you actually have
-(under adversarial-review-loop, `verification.txt` when supplied, which is the implementer's
-claim and not proof; when invoked directly, the CI status or gate output in the PR or session)
-and what is missing, such as a launcher, spec, probe or image change with no integration run
-(`SRD_IT=1`, a host with Docker) reported, or a `meta/**` change whose run did not set
-`SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1` (without it the meta-tests may skip their tools). Never
-say that a check you did not see passed. Judge whether the change's tests prove it: a behaviour
-change needs a test that fails on the old code. When invoked directly, one focused test
+Do not re-run the repository's gates (`make check`, `make verify`, `make rust-deny`, `cargo test -p
+meta`, the integration tests). The implementer is expected to run them and CI runs them again, but
+do not assume either happened: report the verification evidence you actually have (under
+adversarial-review-loop, `verification.txt` when supplied, which is the implementer's claim and not
+proof; when invoked directly, the CI status or gate output in the PR or session) and what is
+missing, such as a launcher, spec, probe or image change with no integration run (`SRD_IT=1`, a host
+with Docker) reported, or a `meta/**` change whose run did not set
+`SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1` (without it the meta-tests may skip their tools). Judge what
+is missing against `AGENTS.md`'s *Validation matrix*: every changed path owes the checks its row
+names. Never say that a check you did not see passed. Judge whether the change's tests prove it: a
+behaviour change needs a test that fails on the old code. When invoked directly, one focused test
 (`cargo test --locked --lib <module>::tests::<name>`) may be run to confirm a single suspected
-finding, never a full suite or gate. A candidate that is neither reproduced nor traced end to end
-is dropped.
+finding, never a full suite or gate. A candidate that is neither reproduced nor traced end to end is
+dropped.
 
 ## Report
 
