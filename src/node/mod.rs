@@ -135,7 +135,9 @@ impl NodeLock {
                 Ok(id) => return Ok(Self { id }),
                 Err(DockerError::Conflict(_)) => {}
                 Err(
-                    error @ (DockerError::NotFound | DockerError::Other(_) | DockerError::Timeout),
+                    error @ (DockerError::NotFound
+                    | DockerError::Other(_)
+                    | DockerError::Timeout(_)),
                 ) => {
                     return Err(docker_error("create the node lock", error));
                 }
@@ -147,7 +149,7 @@ impl NodeLock {
                 Err(
                     error @ (DockerError::Conflict(_)
                     | DockerError::Other(_)
-                    | DockerError::Timeout),
+                    | DockerError::Timeout(_)),
                 ) => {
                     return Err(docker_error("inspect the node lock", error));
                 }
@@ -189,7 +191,8 @@ impl NodeLock {
                 Ok(())
             }
             Err(
-                error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout),
+                error
+                @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout(_)),
             ) => Err(docker_error("release the node lock", error)),
         }
     }
@@ -398,9 +401,9 @@ async fn resolve_network(
     match docker.inspect_network(network.as_str()).await {
         Ok(resolved) => Ok(Some(resolved)),
         Err(DockerError::NotFound) => Ok(None),
-        Err(error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout)) => {
-            Err(docker_error(&format!("inspect network {network}"), error))
-        }
+        Err(
+            error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout(_)),
+        ) => Err(docker_error(&format!("inspect network {network}"), error)),
     }
 }
 
@@ -433,16 +436,16 @@ async fn owner_of(
         Err(DockerError::NotFound) => Ok(Owner::Gone),
         // A timeout or an engine error says nothing about whether the owner still runs; only a
         // confirmed absence makes the container an orphan.
-        Err(error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout)) => {
-            Err(docker_error(
-                &format!(
-                    "inspect launcher {} of {}",
-                    short(owner.as_str()),
-                    short(container)
-                ),
-                error,
-            ))
-        }
+        Err(
+            error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout(_)),
+        ) => Err(docker_error(
+            &format!(
+                "inspect launcher {} of {}",
+                short(owner.as_str()),
+                short(container)
+            ),
+            error,
+        )),
         Ok(info) => match info.running {
             None => Err(NodeError::OwnerState {
                 container: short(container),
@@ -470,12 +473,12 @@ async fn list_role(
 async fn remove(docker: &impl DockerApi, id: &str) -> Result<(), NodeError> {
     match docker.remove_container(id).await {
         Ok(()) | Err(DockerError::NotFound) => Ok(()),
-        Err(error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout)) => {
-            Err(docker_error(
-                &format!("remove container {}", short(id)),
-                error,
-            ))
-        }
+        Err(
+            error @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout(_)),
+        ) => Err(docker_error(
+            &format!("remove container {}", short(id)),
+            error,
+        )),
     }
 }
 

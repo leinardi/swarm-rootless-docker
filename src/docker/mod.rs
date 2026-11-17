@@ -43,6 +43,7 @@ use docker_client::bollard::query_parameters::{
     CreateContainerOptionsBuilder, ListContainersOptionsBuilder, RemoveContainerOptionsBuilder,
     StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
+use docker_client::demux::Framing;
 use docker_client::{CancellationToken, Config, ErrorKind, bounded};
 use tokio::sync::{mpsc, oneshot};
 
@@ -65,8 +66,10 @@ pub enum DockerError {
     NotFound,
     #[error("conflict: {0}")]
     Conflict(String),
-    #[error("no complete answer within {CALL_TIMEOUT:?}")]
-    Timeout,
+    /// The call had no complete answer within the client's timeout: docker-client's text, which
+    /// names that timeout.
+    #[error("{0}")]
+    Timeout(String),
     #[error("{0}")]
     Other(String),
 }
@@ -76,7 +79,7 @@ impl From<docker_client::Error> for DockerError {
         match error.kind() {
             ErrorKind::NotFound => Self::NotFound,
             ErrorKind::Conflict => Self::Conflict(error.to_string()),
-            ErrorKind::Timeout => Self::Timeout,
+            ErrorKind::Timeout => Self::Timeout(error.to_string()),
             ErrorKind::Cancelled | ErrorKind::Unavailable | ErrorKind::Other => {
                 Self::Other(error.to_string())
             }
@@ -269,7 +272,11 @@ impl Bollard {
     ) -> Result<T, DockerError> {
         // Boxed: the engine call's future is large, and every method here awaits one, which put
         // the launcher's whole future over clippy's `large_futures` limit.
-        Ok(Box::pin(bounded(timeout, call)).await?)
+        // A call that could not dial the socket fails with moby's text naming it
+        // (docker-client's `Error::at_host`), as the streaming calls' own dials do.
+        Box::pin(bounded(timeout, call))
+            .await
+            .map_err(|error| DockerError::from(error.at_host(self.config.daemon_host())))
     }
 }
 
@@ -376,9 +383,12 @@ impl DockerApi for Bollard {
     async fn attach(&self, id: &str) -> Result<OutputStream, DockerError> {
         // The pump's task ends with its receiver, and so does the one below that maps its errors;
         // nothing cancels it otherwise.
+        // The containers this program creates never ask for a TTY (their create body leaves `Tty`
+        // unset, false), so the engine frames their output: stdout and stderr, multiplexed.
         let mut attached = attach::attach(
-            &self.client,
+            &self.config,
             id,
+            Framing::Multiplexed,
             self.timeout,
             OUTPUT_BUFFER,
             CancellationToken::new(),

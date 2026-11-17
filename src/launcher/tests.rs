@@ -685,7 +685,10 @@ async fn a_stalled_health_check_does_not_hide_daemon_events() {
         }
         match event {
             Event::Exit => docker.exit(&daemon, 7),
-            Event::LogFailure => docker.fail_output(&daemon, DockerError::Timeout),
+            Event::LogFailure => docker.fail_output(
+                &daemon,
+                DockerError::Timeout("no complete answer within 10s".to_owned()),
+            ),
         }
         let result = tokio::time::timeout(Duration::from_secs(1), run)
             .await
@@ -718,10 +721,14 @@ fn launcher_errors_preserve_their_sources() {
                 .is_some()
         );
     }
-    let error = LaunchError::LogStream(DockerError::Timeout);
+    let error = LaunchError::LogStream(DockerError::Timeout(
+        "no complete answer within 10s".to_owned(),
+    ));
     assert_eq!(
         error.source().unwrap().downcast_ref::<DockerError>(),
-        Some(&DockerError::Timeout)
+        Some(&DockerError::Timeout(
+            "no complete answer within 10s".to_owned()
+        ))
     );
 }
 

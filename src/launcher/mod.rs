@@ -575,7 +575,7 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
                 Err(
                     error @ (DockerError::Conflict(_)
                     | DockerError::Other(_)
-                    | DockerError::Timeout),
+                    | DockerError::Timeout(_)),
                 ) => tracing::warn!(%error, "the daemon's stop failed"),
             }
             match wait {
@@ -644,12 +644,12 @@ impl<Docker: DockerApi> Launch<'_, Docker> {
 async fn remove(docker: &impl DockerApi, id: &str) -> Result<(), LaunchError> {
     match docker.remove_container(id).await {
         Ok(()) | Err(DockerError::NotFound) => Ok(()),
-        Err(source @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout)) => {
-            Err(docker_error(
-                &format!("remove container {}", short(id)),
-                source,
-            ))
-        }
+        Err(
+            source @ (DockerError::Conflict(_) | DockerError::Other(_) | DockerError::Timeout(_)),
+        ) => Err(docker_error(
+            &format!("remove container {}", short(id)),
+            source,
+        )),
     }
 }
 
