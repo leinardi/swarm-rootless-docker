@@ -180,8 +180,8 @@ and where each path really is, so that two paths reaching the same storage are c
   healthy.
 - The launcher exits with the daemon's exit code when the daemon stops on its own, 1 when the
   start is refused (a conflict, a probe refusal, the lock held for more than 30 s) or the daemon's
-  log stream is lost, 0 after a clean stop, and 2 for a bad flag. Swarm restarts it, and a refused
-  start is retried that way.
+  log stream is lost (a single output frame over 16 MiB counts as lost), 0 after a clean stop, and
+  2 for a bad flag. Swarm restarts it, and a refused start is retried that way.
 - An update or a rollback of the service restarts the daemon, which stops every container it runs.
 
 ## The daemon's profile
