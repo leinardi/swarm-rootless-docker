@@ -189,3 +189,55 @@ async fn an_attach_reads_the_multiplexed_frames_in_order() {
         ]
     );
 }
+
+/// A frame longer than the client's `output_frame` limit ends the attach output with an error
+/// after the frames before it, read from its header alone, so the launcher's pump fails and stops
+/// the daemon rather than buffering the frame.
+#[tokio::test]
+async fn an_attach_frame_over_the_limit_ends_the_output_with_an_error() {
+    let scratch = Scratch::new("attach-oversized");
+    let socket = scratch.0.join("docker.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let oversized = u32::try_from(LIMITS.output_frame.get() + 1).unwrap();
+    let engine = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(read, 0, "the request ended before its headers");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        stream
+            .write_all(
+                b"HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.multiplexed-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        stream
+            .write_all(b"\x01\x00\x00\x00\x00\x00\x00\x03out")
+            .await
+            .unwrap();
+        stream.write_all(b"\x01\x00\x00\x00").await.unwrap();
+        stream.write_all(&oversized.to_be_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
+        // Held open: the output must end on the header, not on the connection closing.
+        let mut rest = Vec::new();
+        let _ = stream.read_to_end(&mut rest).await;
+    });
+
+    let docker = Bollard::with_timeout(socket.to_str().unwrap(), Duration::from_secs(5)).unwrap();
+    let mut outputs = docker.attach("abc").await.unwrap();
+    assert_eq!(
+        outputs.recv().await.unwrap().unwrap(),
+        Output::Stdout(b"out".to_vec())
+    );
+    let error = tokio::time::timeout(Duration::from_secs(5), outputs.recv())
+        .await
+        .expect("the oversized frame did not end the output")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("exceeds"), "{error}");
+    drop(outputs);
+    engine.abort();
+}

@@ -138,7 +138,7 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v2.0.0"`, with `version = "2.0"`) in the root `Cargo.toml`'s
+release tag (`tag = "v3.0.0"`, with `version = "3.0"`) in the root `Cargo.toml`'s
 `[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
 

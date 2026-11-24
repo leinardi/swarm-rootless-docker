@@ -35,6 +35,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use docker_client::attach::{self, WaitCondition};
@@ -44,7 +45,7 @@ use docker_client::bollard::query_parameters::{
     StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
 use docker_client::demux::Framing;
-use docker_client::{CancellationToken, Config, ErrorKind, bounded};
+use docker_client::{CancellationToken, Config, ErrorKind, Limits, bounded};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::spec::ContainerSpec;
@@ -53,6 +54,21 @@ use crate::spec::ContainerSpec;
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Output pieces buffered between the engine and the launcher's own stdout and stderr.
 const OUTPUT_BUFFER: usize = 64;
+/// The most of one whole body docker-client reads for the launcher: the `attach::wait` answer
+/// (`{"StatusCode":…}`) and the engine's refusals. The lists, inspects and writes go through
+/// bollard, which these limits do not bound.
+const RESPONSE_BODY: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
+/// The most of one `/events` record. Unused: the launcher subscribes to no event stream.
+const EVENT_RECORD: NonZeroUsize = NonZeroUsize::new(1024 * 1024).unwrap();
+/// The most of one frame of the attach output of the daemon and of the probe. Generous, because an
+/// oversized frame fails the output stream, which stops the daemon (or fails the probe).
+const OUTPUT_FRAME: NonZeroUsize = NonZeroUsize::new(16 * 1024 * 1024).unwrap();
+/// What docker-client's own calls may buffer from the engine, for every client of the launcher.
+pub const LIMITS: Limits = Limits {
+    response_body: RESPONSE_BODY,
+    event_record: EVENT_RECORD,
+    output_frame: OUTPUT_FRAME,
+};
 /// The name of Docker's default bridge network.
 const DEFAULT_BRIDGE: &str = "bridge";
 /// The option that marks the default bridge, whatever its name.
@@ -248,7 +264,7 @@ impl Bollard {
     ///
     /// [`DockerError::Other`] when the client cannot be built.
     pub fn with_timeout(path: &str, timeout: Duration) -> Result<Self, DockerError> {
-        let config = Config::unix(path).response_header_timeout(timeout);
+        let config = Config::unix(path, LIMITS).response_header_timeout(timeout);
         docker_client::connect(config.clone())
             .map(|client| Self {
                 client,
