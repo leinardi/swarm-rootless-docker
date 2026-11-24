@@ -67,6 +67,7 @@ runs the release plan's tests:
 
 ```bash
 bash .github/scripts/release-plan.test.sh    # the release plan, against scratch repositories
+bash .github/scripts/trivyignore-expiry.test.sh  # the .trivyignore.yaml expiry check
 ```
 
 Releases are cut by `release.yaml`: daily on a schedule, or dispatched on `main` (with an
@@ -110,11 +111,12 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   `meta/src/lib.rs` holds what they share: `repo()`, the repository under test.
 - `.github/workflows/` — `ci.yaml` (the gates and `ci-result`), `release.yaml` (plan, build,
   test and scan each variant, tag, publish to GHCR with provenance and a cosign signature, move the
-  floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, and
-  cargo-deny) and `pre-commit-warmup.yaml` (refreshes the pre-commit cache on `main`).
-  `.github/scripts/` holds the release's own script and its test: `release-plan.sh` (what to
-  release). The shared steps come from `leinardi/gh-composite-actions`, pinned by SHA:
-  `require-ci-green`, `require-job-success`, `check-pinned-bases`, `trivy-gate` (the Trivy gate,
+  floating tags), `scheduled-scan.yaml` (weekly: the images behind the floating tags, the
+  `.trivyignore.yaml` expiries, and cargo-deny) and `pre-commit-warmup.yaml` (refreshes the
+  pre-commit cache on `main`). `.github/scripts/` holds the workflows' own scripts and their
+  tests: `release-plan.sh` (what to release) and `trivyignore-expiry.sh` (an ignore entry that
+  expires within ten days). The shared steps come from `leinardi/gh-composite-actions`, pinned by
+  SHA: `require-ci-green`, `require-job-success`, `check-pinned-bases`, `trivy-gate` (the Trivy gate,
   with the base diff in base mode), `toolchain-record`/`toolchain-recover`, `setup-svu`,
   `setup-cargo-deny` and `setup-shellcheck` (the pinned ShellCheck droast's required bridge runs).
   `.trivyignore.yaml` lists the scans' accepted findings.
@@ -195,7 +197,7 @@ Run before considering an edit done. `make check` applies to every row.
 | `deployments/docker/docker-compose.yaml` | `make check` (dclint); `docker stack config -c deployments/docker/docker-compose.yaml` with `DOCKER_GID` set; keep the README's deployment section in step |
 | `.github/workflows/**`, `.github/actions/**`, `.github/dependabot.yml` | `pre-commit run actionlint --all-files`, `cargo test --locked -p meta --test toolchain --test release`; reason through each trigger the workflow has (pull request, push, dispatch, schedule) and keep `ci-result`'s `needs` complete; for `release.yaml`, dispatch a dry run |
 | `.github/scripts/**` | `bash .github/scripts/<script>.test.sh` for each script changed, `cargo test --locked -p meta --test release` |
-| `.trivyignore.yaml` | every entry scoped to paths, with a statement and an `expired_at`; scan the image with the latest Trivy and this file, as trivy-gate does (`trivy image --ignore-unfixed --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml`) |
+| `.trivyignore.yaml` | every entry scoped to paths, with a statement and an `expired_at` more than ten days out (`bash .github/scripts/trivyignore-expiry.sh`); scan the image with the latest Trivy and this file, as trivy-gate does (`trivy image --ignore-unfixed --severity HIGH,CRITICAL --ignorefile .trivyignore.yaml`) |
 | `.pre-commit-config.yaml`, `Makefile`, `.mk/**` | `make check`, `cargo test --locked -p meta --test toolchain`, `make help`; a hook that needs a system tool also gets it in `ci.yaml`'s `pre-commit-all` |
 | `scripts/bootstrap-mk-common.sh`, the make-common `.mk` files | never by hand: port the change to make-common, then `make mk-common-update` and `make help` |
 | `meta/**` | `SWARM_ROOTLESS_DOCKER_REQUIRE_TOOLS=1 cargo test --locked -p meta` |

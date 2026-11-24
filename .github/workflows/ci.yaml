@@ -251,8 +251,9 @@ jobs:
           from-ref: ${{ github.event.pull_request.base.sha }}
           to-ref: ${{ github.event.pull_request.head.sha }}
 
-  # The release workflow's own script, against scratch repositories and stub gh, docker and svu
-  # commands: release.yaml runs it, and a mistake there would only show in a release.
+  # The release workflows' own scripts: release-plan.sh against scratch repositories and stub gh,
+  # docker and svu commands (release.yaml runs it, and a mistake there would only show in a
+  # release), and trivyignore-expiry.sh against scratch ignore files (scheduled-scan.yaml runs it).
   release-scripts:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -265,6 +266,9 @@ jobs:
 
       - name: Test release-plan.sh
         run: bash .github/scripts/release-plan.test.sh
+
+      - name: Test trivyignore-expiry.sh
+        run: bash .github/scripts/trivyignore-expiry.test.sh
 
   # The Rust workspace: the same workspace-wide commands as make verify-rust and the pre-commit
   # hooks, plus cargo-deny (advisories, licences, bans and sources; the advisory database needs the
