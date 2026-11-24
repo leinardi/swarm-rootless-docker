@@ -9,8 +9,8 @@
 #
 # The entries below are in upstream's docker:29-dind-rootless: Go modules its binaries were built
 # with, which only upstream can rebuild. The image adds no package, the floating tag already
-# resolves to the newest digest (sha256:e3d0fa70055956693134873845b743bbe35b5199c68a52347032ae3e5dbac9a0
-# on 2026-11-09), and the daily base rebuild ships upstream's fix within a day of its release.
+# resolves to the newest digest (sha256:5a703ad0d72cd5e4fb4beca8024d6eddef6d22a46ed1d9812bf3d24ff43ccbce
+# on 2026-11-24), and the daily base rebuild ships upstream's fix within a day of its release.
 # Review them when they expire: drop an entry the current digest no longer needs, otherwise extend
 # the date.
 vulnerabilities:
@@ -25,7 +25,7 @@ vulnerabilities:
     statement: &upstream-go >-
       A Go module upstream's docker:29-dind-rootless built this binary with; its newest digest
       still carries it, and only upstream can rebuild the binary.
-    expired_at: 2026-11-23
+    expired_at: 2026-12-08
   - id: CVE-2026-78669
     paths:
       - usr/local/bin/containerd-shim-runc-v2
@@ -33,14 +33,19 @@ vulnerabilities:
       - usr/local/bin/runc
       - usr/local/libexec/docker/cli-plugins/docker-buildx
     statement: *upstream-go
-    expired_at: 2026-11-23
+    expired_at: 2026-12-08
+  - id: CVE-2026-39821
+    paths:
+      - usr/local/bin/runc
+    statement: *upstream-go
+    expired_at: 2026-12-08
   - id: CVE-2026-46600
     paths:
       - usr/local/bin/runc
     statement: *upstream-go
-    expired_at: 2026-11-23
+    expired_at: 2026-12-08
   - id: CVE-2026-17106
     paths:
       - usr/local/libexec/docker/cli-plugins/docker-buildx
     statement: *upstream-go
-    expired_at: 2026-11-23
+    expired_at: 2026-12-08

@@ -201,3 +201,9 @@ floating tag, every finding counted, the base's included, as the release gates o
 and cargo-deny over `main`'s dependencies. A failure fails the run: fix it with a release, or, for
 a finding only upstream's base can fix, with a reviewed `.trivyignore.yaml` entry that expires,
 until the daily base rebuild ships upstream's fix.
+
+Trivy enforces each entry's `expired_at`: from that date the finding counts again and fails the
+daily release. The scheduled scan therefore also runs `.github/scripts/trivyignore-expiry.sh`,
+which fails on an entry that expires within ten days (more than the week between runs), or has no
+valid `expired_at`. Review each entry it names before the date: scan the current base digest with
+the latest Trivy, drop the entries the digest no longer needs, and extend the rest.

@@ -5,7 +5,8 @@ name: Scheduled scan
 # own gates: trivy-gate (the latest Trivy, fixable HIGH and CRITICAL findings, .trivyignore.yaml)
 # and cargo-deny. A failure fails the run, which is what makes it visible: fix it with a new
 # release, or, for a finding only upstream's base can fix, a reviewed .trivyignore.yaml entry until
-# the daily base rebuild ships upstream's fix.
+# the daily base rebuild ships upstream's fix. The entries themselves are checked too: one that
+# expires within ten days fails the run, a week ahead of the daily release it would otherwise fail.
 on:
   schedule:
     # Mondays, 06:17 UTC: off the hour, when scheduled runs pile up.
@@ -118,6 +119,22 @@ jobs:
         with:
           image: ${{ env.IMAGE_REPO }}@${{ matrix.image.digest }}
           platform: ${{ env.PLATFORMS }}
+
+  # Trivy enforces each .trivyignore.yaml entry's expired_at: on that date the finding fails the
+  # daily release again. Ten days is more than the week between these runs, so every entry fails
+  # one of them before it expires, while it can still be reviewed without a failed release.
+  ignorefile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the .trivyignore.yaml expiries
+        run: bash .github/scripts/trivyignore-expiry.sh .trivyignore.yaml 10
 
   dependencies:
     runs-on: ubuntu-latest
