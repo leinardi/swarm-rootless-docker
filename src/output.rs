@@ -36,7 +36,7 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::{self, error::TrySendError};
-use tracing_subscriber::fmt::MakeWriter;
+use tracing_setup::tracing_subscriber::fmt::MakeWriter;
 
 /// Pieces queued per lane before senders wait or drop.
 pub const LANE_CAPACITY: usize = 1024;

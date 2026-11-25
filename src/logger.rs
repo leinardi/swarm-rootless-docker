@@ -34,7 +34,7 @@ use std::io;
 use tracing::Dispatch;
 use tracing::level_filters::LevelFilter;
 use tracing_setup::Options;
-use tracing_subscriber::fmt::MakeWriter;
+use tracing_setup::tracing_subscriber::fmt::MakeWriter;
 
 use crate::output::Lane;
 
