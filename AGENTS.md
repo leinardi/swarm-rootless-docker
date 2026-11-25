@@ -154,15 +154,14 @@ The current pin is `v4.0.0`. <!-- rust-pin-current -->
 - **Moving the `tag`** needs the network: `make rust-pin-bump TAG=vX.Y.Z` rewrites `tag` and
   `version` on every rust-common line and the current-pin line above, re-resolves `Cargo.lock`
   and fails unless only rust-common's packages moved. Commit the `Cargo.toml` and `Cargo.lock`
-  changes together.
+  changes together. `deny.toml` allow-lists the source (`allow-git`); it changes with the URL.
+  `make rust-deny` checks every workspace member's graph (`--workspace`), the meta crate's
+  rust-common crates included.
 - **A crate whose types cross rust-common's API comes through its re-export**, never a declaration
   of its own: bollard as `docker_client::bollard`, tracing-subscriber (the logger's `MakeWriter`)
   as `tracing_setup::tracing_subscriber`. Two copies compile apart and fail at the boundary with
   E0277 or E0308; `meta/tests/rust_common_boundary.rs` holds each to one package (CI runs it
   before the build).
-  `deny.toml` allow-lists the source (`allow-git`); it changes with the URL. `make rust-deny`
-  checks every workspace member's graph (`--workspace`), the meta crate's rust-common crates
-  included.
 - **Local work on a shared crate** uses an uncommitted
   `[patch."https://github.com/leinardi/rust-common"]` table in the root `Cargo.toml`, one
   `<name> = { path = "../rust-common/crates/<name>" }` line per crate the workspace names (a
