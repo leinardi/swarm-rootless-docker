@@ -140,9 +140,11 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v3.0.0"`, with `version = "3.0"`) in the root `Cargo.toml`'s
+release tag (`tag`, with `version` the tag's `<major>.<minor>`) in the root `Cargo.toml`'s
 `[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
+
+The current pin is `v3.0.0`. <!-- rust-pin-current -->
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
