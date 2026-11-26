@@ -104,8 +104,10 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
   and the exact Rust release, ShellCheck one value, Trivy never pinned, no vacuous flags),
   `dockerfiles.rs` (the image's stages and runtime rules), `release.rs` (no Docker major outside the
   Dockerfile, the image workflows agree on the variants, every variant scanned), and
-  `workspace_lints.rs` (every member opts into the workspace lints) and `rust_common_pins.rs` (the
-  rust-common pins are `vX.Y.Z` tags with the matching `version`, one tag throughout). Most run
+  `workspace_lints.rs` (every member opts into the workspace lints), `rust_common_pins.rs` (the
+  rust-common pins are `vX.Y.Z` tags with the matching `version`, one tag throughout) and
+  `rust_common_boundary.rs` (one package per crate at rust-common's boundary, taken through its
+  re-export). Most run
   rust-common's `repo-meta` checks with this repository's parameters, beside the rules that are
   its own.
   `meta/src/lib.rs` holds what they share: `repo()`, the repository under test.
@@ -140,25 +142,26 @@ A Cargo workspace: the root package `swarm-rootless-docker` (the binary) and `me
 feature for the logger tests' `Capture`), `service-kit` (`buildinfo!` only, no features) and
 `docker-client` (feature `attach`) come from
 [leinardi/rust-common](https://github.com/leinardi/rust-common), a git dependency pinned by
-release tag (`tag = "v3.0.0"`, with `version = "3.0"`) in the root `Cargo.toml`'s
+release tag (`tag`, with `version` the tag's `<major>.<minor>`) in the root `Cargo.toml`'s
 `[workspace.dependencies]`.
 Each member opts in with `<name>.workspace = true`.
+
+The current pin is `v4.0.0`. <!-- rust-pin-current -->
 
 - **A behaviour difference is a parameter of the shared crate**, passed from here, never a fork of
   its code into this repository. A fix to shared code lands in rust-common first, then reaches here
   by moving the `tag`.
-- **Moving the `tag`** needs the network: change it on every rust-common line (the
-  `rust_common_pins` meta-test refuses lines that disagree), and `version` with it when the crates'
-  `<major>.<minor>` moves (a `v1.1.0` checkout does not resolve against `version = "0.3"`), then
-  run `cargo fetch` before the `--locked` make targets, which otherwise refuse the stale lock. The
-  manifest change is what
-  makes cargo re-resolve the git source; `cargo fetch` changes nothing else, whereas
-  `cargo update -p <crate>` can also move unrelated edges.
-  `git diff Cargo.lock` must touch only rust-common lines. Commit the `Cargo.toml` and
-  `Cargo.lock` changes together.
-  `deny.toml` allow-lists the source (`allow-git`); it changes with the URL. `make rust-deny`
-  checks every workspace member's graph (`--workspace`), the meta crate's rust-common crates
-  included.
+- **Moving the `tag`** needs the network: `make rust-pin-bump TAG=vX.Y.Z` rewrites `tag` and
+  `version` on every rust-common line and the current-pin line above, re-resolves `Cargo.lock`
+  and fails unless only rust-common's packages moved. Commit the `Cargo.toml` and `Cargo.lock`
+  changes together. `deny.toml` allow-lists the source (`allow-git`); it changes with the URL.
+  `make rust-deny` checks every workspace member's graph (`--workspace`), the meta crate's
+  rust-common crates included.
+- **A crate whose types cross rust-common's API comes through its re-export**, never a declaration
+  of its own: bollard as `docker_client::bollard`, tracing-subscriber (the logger's `MakeWriter`)
+  as `tracing_setup::tracing_subscriber`. Two copies compile apart and fail at the boundary with
+  E0277 or E0308; `meta/tests/rust_common_boundary.rs` holds each to one package (CI runs it
+  before the build).
 - **Local work on a shared crate** uses an uncommitted
   `[patch."https://github.com/leinardi/rust-common"]` table in the root `Cargo.toml`, one
   `<name> = { path = "../rust-common/crates/<name>" }` line per crate the workspace names (a

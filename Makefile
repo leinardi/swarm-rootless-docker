@@ -50,6 +50,11 @@ MK_COMMON_BOOTSTRAP := $(shell "$(MK_COMMON_BOOTSTRAP_SCRIPT)" \
 # -----------------------------------------------------------------------------
 BIN_NAME ?= swarm-rootless-docker
 
+# rust-pin-bump (rust.mk): the rust-common pins it moves, and the doc whose current-pin line it
+# moves with them.
+RUST_PIN_URL  := https://github.com/leinardi/rust-common
+RUST_PIN_DOCS := AGENTS.md
+
 # Arguments for `make rust-run`
 ARGS ?= --version
 
